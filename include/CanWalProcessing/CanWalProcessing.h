@@ -2,18 +2,22 @@
 
 #include "ICanWalProcessing.h"
 
-class CanWalProcessing : public ICanWalProcessing
+class CanWalProcessing : public ICanWalProcessing::Os::Input, public ICanWalProcessing::Can::Input
 {
 public:
     CanWalProcessing();
-
-    ICanWalProcessingOut* _iCanWalProcessingOut = nullptr;
+    void SetOutputInterfaces(ICanWalProcessing::Os::Output* iOs, ICanWalProcessing::Can::Output* iCan, ICanWalProcessing::Sound::Output* iSound);
 
     // Function calls should always be mutually excluded
-    void HandleCanMessage(int id, int length, const unsigned char* data) override;
+    // ICanWalProcessing::Os::Input
     void HandleExpiredTimer(int timerId) override;
+    // ICanWalProcessing::Can::Input
+    void HandleCanMessage(int id, int length, const unsigned char* data) override;
 
 private:
+    ICanWalProcessing::Os::Output* _iOs = nullptr;
+    ICanWalProcessing::Can::Output* _iCan = nullptr;
+    ICanWalProcessing::Sound::Output* _iSound = nullptr;
     // CAN IDs
     enum class CanId
     {
@@ -24,12 +28,13 @@ private:
         mirrorFoldStatus = 0x0F6,
         ignitionAndKeyStatus = 0x130,
         vehicleSpeed = 0x1B4,
-        remoteControlInput = 0x23A,
+        remoteControlAndDoorHandleInput = 0x23A,
         windowRoofAndMirrorControl = 0x26E,
         doorLockControl = 0x2A0,
         dateTime = 0x2F8,
         seatbeltAndSeatOccupancyStatus = 0x2FA,
-        doorStatus = 0x2FC
+        doorStatus = 0x2FC,
+        setDateTime = 0x39E
     };
     // Storage for received statuses
     struct DoorOpenStatuses
@@ -69,8 +74,8 @@ private:
     const char* ToString(FrontPassengerSeatState frontPassengerSeatState);
     enum class WalCancelState
     {
-        noDoorOpenedAfterUnlockCancelNotPossible,
-        doorOpenedAfterUnlockCancelPossible,
+        noDoorOpenedAfterUnlockCancellationNotPossible,
+        doorOpenedAfterUnlockCancellationPossible,
         walCancelled
     } _walCancelState;
     const char* ToString(WalCancelState walCancelState);
@@ -95,10 +100,11 @@ private:
         frontPassengerSeatOccupationStatus,
         doorOpenStatus,
         doorLockStatus,
-        remoteControlUnlockButtonPressed,
-        remoteControlLockButtonPressed,
+        remoteControlButtonPressed,
+        doorHandleButtonPressed,
         vehicleSpeed,
         keyLocation,
+        windowRoofAndMirrorControl,
         dateTime
     };
     // Timers
@@ -108,7 +114,7 @@ private:
         lockCarWaitShort = 5000,
         lockCarWaitLong = 30000,
         intermediateCountdownSoundInterval = 2000,
-        closeWindowsAndRoofCanMessageInterval = 100,
+        closeWindowsAndRoofCanMessageInterval = 500,
         stopWalExecutionShort = 1000,
         stopWalExecutionLong = 14000
     };
@@ -166,6 +172,7 @@ private:
         } dateTime;
     };
     void HandleEvent(Event event);
+    void TraceEvent(Event event);
     void StartTimer(int timerId, TimerPeriod timerPeriod);
     void StopTimer(int timerId);
     bool TimerRunning(int timerId);

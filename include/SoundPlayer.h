@@ -1,13 +1,14 @@
 #pragma once
 
-#include "ISoundPlayer.h"
+#include "CanWalProcessing/ICanWalProcessing.h"
 
-class SoundPlayer : public ISoundPlayer
+class SoundPlayer : public ICanWalProcessing::Sound::Output
 {
 public:
     SoundPlayer();
 
-    void Play() override;
+    virtual void PlaySound(Sound sound) override;
+    virtual void StopPlayingSound() override;
 
 private:
     static void PlayTaskCode(void* pvParameters);

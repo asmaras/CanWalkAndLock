@@ -1,7 +1,9 @@
 #include "CanInterface.h"
-#include "driver/twai.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include <driver/twai.h>
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #include <memory.h>
 
 CanInterface::CanInterface()
@@ -9,19 +11,39 @@ CanInterface::CanInterface()
     
 }
 
+void CanInterface::SetOutputInterface(ICanInterface::Output* iOutput)
+{
+    _commonHandling._iOutputs.push_back(iOutput);
+}
+
 void CanInterface::Start()
+{
+    _commonHandling.Start();
+}
+
+void CanInterface::SendCanMessage(int id, int length, const unsigned char* data)
+{
+    _commonHandling.SendCanMessage(id, length, data);
+}
+
+CanInterface::CommonHandling::CommonHandling(SemaphoreHandle_t& processingMutex) :
+    _processingMutex(processingMutex)
+{
+    
+}
+
+void CanInterface::CommonHandling::Start()
 {
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(GPIO_NUM_21, GPIO_NUM_22, TWAI_MODE_NORMAL);
     g_config.intr_flags |= ESP_INTR_FLAG_IRAM;
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_100KBITS();
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
-    esp_err_t result;
-    result = twai_driver_install(&g_config, &t_config, &f_config);
-    printf("Installed TWAI driver, result=%d\n", result);
+    ESP_ERROR_CHECK(twai_driver_install(&g_config, &t_config, &f_config));
+    ESP_LOGI(_logTag, "Installed TWAI driver");
 
-    result = twai_start();
-    printf("Started TWAI driver, result=%d\n", result);
+    ESP_ERROR_CHECK(twai_start());
+    ESP_LOGI(_logTag, "Started TWAI driver");
 
     xTaskCreate(
         CanReceiveTask,
@@ -33,42 +55,32 @@ void CanInterface::Start()
     );
 }
 
-void CanInterface::SendMessage(int id, int length, const unsigned char* data)
+void CanInterface::CommonHandling::SendCanMessage(int id, int length, const unsigned char* data)
 {
-    esp_err_t result;
     twai_message_t message = {};
     message.identifier = id;
     message.data_length_code = length;
     memcpy(message.data, data, length);
-    result = twai_transmit(&message, 0);
-    if (result != ESP_OK)
-    {
-        printf("twai_transmit failed with result %d\n", result);
-    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(twai_transmit(&message, 0));
 }
 
-void CanInterface::CanReceiveTask(void* pvParameters)
+void CanInterface::CommonHandling::CanReceiveTask(void* pvParameters)
 {
-    esp_err_t result;
+    CommonHandling* commonHandling = (CommonHandling*)pvParameters;
     twai_message_t message;
     while (true)
     {
-        result = twai_receive(&message, portMAX_DELAY);
-        if(result == ESP_OK)
+        if (ESP_ERROR_CHECK_WITHOUT_ABORT(twai_receive(&message, portMAX_DELAY)) == ESP_OK)
         {
-            // printf("ID is %03x\n", message.identifier);
             if (!(message.rtr))
             {
-                // for (int i = 0; i < message.data_length_code; i++)
-                // {
-                //     printf("Data byte %d = %02x\n", i, message.data[i]);
-                // }
-                ((CanInterface*)pvParameters)->_iCanWalProcessingAdapter->HandleCanMessage(message.identifier, message.data_length_code, message.data);
+                xSemaphoreTake(commonHandling->_processingMutex, portMAX_DELAY);
+                for (auto const& iOutput : commonHandling->_iOutputs)
+                {
+                    iOutput->HandleCanMessage(message.identifier, message.data_length_code, message.data);
+                }
+                xSemaphoreGive(commonHandling->_processingMutex);
             }
-        }
-        else
-        {
-            printf("twai_receive failed with result %d\n", result);
         }
     }
 }

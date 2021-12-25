@@ -6,7 +6,7 @@ SoundPlayer::SoundPlayer()
     
 }
 
-void SoundPlayer::Play()
+void SoundPlayer::PlaySound(Sound sound)
 {
     i2s_config_t i2s_config;
     i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
@@ -46,6 +46,11 @@ void SoundPlayer::Play()
     // vTaskDelete(_playTaskHandle);
     // i2s_driver_uninstall(I2S_NUM_0);
     // Play();
+}
+
+void SoundPlayer::StopPlayingSound()
+{
+    
 }
 
 void SoundPlayer::PlayTaskCode(void* pvParameters)

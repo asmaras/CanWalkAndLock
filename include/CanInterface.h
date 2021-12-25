@@ -1,18 +1,33 @@
 #pragma once
 
 #include "ICanInterface.h"
-#include "ICanWalProcessingAdapter.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <list>
 
-class CanInterface : public ICanInterface
+class CanInterface
 {
 public:
     CanInterface();
-
-    ICanWalProcessingAdapter* _iCanWalProcessingAdapter = nullptr;
-
-    void Start();
-    void SendMessage(int id, int length, const unsigned char* data) override;
+    void SetOutputInterface(ICanInterface::Output* iOutput);
+    static void Start();
+    void SendCanMessage(int id, int length, const unsigned char* data);
     
 private:
-    static void CanReceiveTask(void* pvParameters);
+    class CommonHandling
+    {
+    public:
+        CommonHandling(SemaphoreHandle_t& processingMutex);
+        void Start();
+        void SendCanMessage(int id, int length, const unsigned char* data);
+
+        std::list<ICanInterface::Output*> _iOutputs;
+        
+    private:
+        static void CanReceiveTask(void* pvParameters);
+        
+        const SemaphoreHandle_t& _processingMutex;
+        const char* _logTag = "CanInterface";
+    };
+    static CommonHandling _commonHandling;
 };

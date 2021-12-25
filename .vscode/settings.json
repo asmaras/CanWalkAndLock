@@ -2,7 +2,11 @@
     "files.associations": {
         "list": "cpp",
         "map": "cpp",
-        "functional": "cpp"
+        "functional": "cpp",
+        "dmx_types.h": "c",
+        "driver.h": "c",
+        "hal.h": "c",
+        "intr_handlers.h": "c"
     },
     "cmake.configureOnOpen": true
 }

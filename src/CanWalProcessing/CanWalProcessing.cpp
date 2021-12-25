@@ -1,4 +1,4 @@
-#include "CanWalProcessing.h"
+#include "CanWalProcessing/CanWalProcessing.h"
 
 CanWalProcessing::CanWalProcessing()
 {
@@ -19,9 +19,25 @@ CanWalProcessing::CanWalProcessing()
             _storedReportedStatuses.doorLockControlLast4Bytes[index] = 0;
         }
         _frontPassengerSeatState = FrontPassengerSeatState::vacated;
-        _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancelNotPossible;
+        _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancellationNotPossible;
         _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock;
         _mainWalState = MainWalState::noGo;
+}
+
+void CanWalProcessing::SetOutputInterfaces(ICanWalProcessing::Os::Output* iOs, ICanWalProcessing::Can::Output* iCan, ICanWalProcessing::Sound::Output* iSound)
+{
+    _iOs = iOs;
+    _iCan = iCan;
+    _iSound = iSound;
+}
+
+void CanWalProcessing::HandleExpiredTimer(int timerId)
+{
+    Timer::FindTimer(timerId)->_running = false;
+    Event event;
+    event.type = EventType::timerExpiry;
+    event.timerExpiry.timerId = timerId;
+    HandleEvent(event);
 }
 
 void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char* data)
@@ -50,7 +66,6 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-
     case CanId::rearPassengerSideDoorStatus:
     {
         // The open status is in bit 0 of byte 3
@@ -73,12 +88,10 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-
     case CanId::frontDriverSideDoorStatus:
     {
         // The open status is in bit 0 of byte 3
         bool doorIsOpen = (data[3] & 0x01) == 1;
-        _iCanWalProcessingOut->Trace("doorIsOpen=%d", doorIsOpen);
         if (doorIsOpen != _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen)
         {
             _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen = doorIsOpen;
@@ -97,7 +110,6 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-
     case CanId::rearDriverSideDoorStatus:
     {
         // The open status is in bit 0 of byte 3
@@ -120,16 +132,24 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-
     case CanId::mirrorFoldStatus:
     {
-        _storedReportedStatuses.mirrorsAreFolded = data[0] == 0xF7;
+        // Byte 0 will be F7 when the mirrors are being folded
+        bool mirrorsAreFolded = data[0] == 0xF7;
+        if (mirrorsAreFolded != _storedReportedStatuses.mirrorsAreFolded)
+        {
+            _storedReportedStatuses.mirrorsAreFolded = mirrorsAreFolded;
+            // This only needs to be stored, no event handling needed
+            _iOs->Trace("Status mirrorFoldStatus(%d)", mirrorsAreFolded);
+        }
     }
     break;
-
     case CanId::ignitionAndKeyStatus:
     {
-        bool keyIsOutside = data[1] == 0x0E && data[3] == 0x04;
+        // When the key is outside bytes 1 and 3 will be 0E/04 or 01/06 (door handle button is pushed)
+        bool keyIsOutside =
+            (data[1] == 0x0E && data[3] == 0x04) ||
+            (data[1] == 0x01 && data[3] == 0x06);
         if (keyIsOutside != _storedReportedStatuses.keyIsOutside)
         {
             _storedReportedStatuses.keyIsOutside = keyIsOutside;
@@ -139,9 +159,10 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-
     case CanId::vehicleSpeed:
     {
+        // The vehicle speed is in the first 12 bits of bytes 0 and 1
+        // The unit is 0.1 km/h
         int vehicleSpeed = (data[0] + ((data[1] & 0x0F) << 16)) / 10;
         if (vehicleSpeed != _storedReportedStatuses.vehicleSpeed)
         {
@@ -152,29 +173,34 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-
-    case CanId::remoteControlInput:
+    case CanId::remoteControlAndDoorHandleInput:
     {
-        switch (data[2])
-        {
-        case 0x01:
-        {
-            Event event;
-            event.type = EventType::remoteControlUnlockButtonPressed;
-            HandleEvent(event);
-        }
-        break;
-        case 0x04:
+        // Bit 0 of byte 2 represents the unlock button
+        // Bit 2 of byte 2 represents the lock button
+        if ((data[2] & 0x01) == 1 || ((data[2] & 0x04) >> 2) == 1)
         {
             Event event;
-            event.type = EventType::remoteControlLockButtonPressed;
+            // Bits 0 and 1 of byte 1 are zero when the input comes from the remote control
+            // They are 3 when it comes from the door handle
+            if ((data[1] & 0x03) == 0)
+            {
+                event.type = EventType::remoteControlButtonPressed;
+            }
+            else
+            {
+                event.type = EventType::doorHandleButtonPressed;
+            }
             HandleEvent(event);
-        }
-        break;
         }
     }
     break;
-    
+    case CanId::windowRoofAndMirrorControl:
+    {
+        Event event;
+        event.type = EventType::windowRoofAndMirrorControl;
+        HandleEvent(event);
+    }
+    break;
     case CanId::doorLockControl:
     {
         if (length == 8)
@@ -182,17 +208,17 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
             for (int index = 0; index < 4; index++)
             {
                 _storedReportedStatuses.doorLockControlLast4Bytes[index] = data[index + 4];
+                // This only needs to be stored, no event handling needed
             }
         }
     }
     break;
-    
     case CanId::dateTime:
     {
         Event event;
         event.type = EventType::dateTime;
         event.dateTime.day = data[3] + 1;
-        event.dateTime.month = data[4];
+        event.dateTime.month = data[4] >> 4;
         event.dateTime.year = data[5] + (data[6] << 8);
         event.dateTime.hour = data[0];
         event.dateTime.minute = data[1];
@@ -200,7 +226,6 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         HandleEvent(event);
     }
     break;
-    
     case CanId::seatbeltAndSeatOccupancyStatus:
     {
         bool seatIsOccupied = data[1] != 0x08;
@@ -213,7 +238,6 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-    
     case CanId::doorStatus:
     {
         bool handleDoorOpenStatusEvent = false;
@@ -225,7 +249,7 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
             handleDoorOpenStatusEvent = true;
         }
         // The bonnet open status is in bit 2 of byte 2
-        bool bonnetIsOpen = (data[2] & 0x04) >> 2 == 1;
+        bool bonnetIsOpen = ((data[2] & 0x04) >> 2) == 1;
         if (bonnetIsOpen != _storedReportedStatuses.doorOpenStatuses.bonnetIsOpen)
         {
             _storedReportedStatuses.doorOpenStatuses.bonnetIsOpen = bonnetIsOpen;
@@ -239,29 +263,9 @@ void CanWalProcessing::HandleCanMessage(int id, int length, const unsigned char*
         }
     }
     break;
-    
     default:
         break;
     }
-
-    // Timer* timer = Timer::_lastTimer;
-    // do
-    // {
-    //     _iCanWalProcessingOut->Trace("Found timer %d", timer->_timerId);
-    //     timer = timer->_previousTimer;
-    // } while (timer != nullptr);
-    // StartTimer(Timers::intermediateCountdownSoundInterval, TimerPeriod::intermediateCountdownSoundInterval);
-}
-
-void CanWalProcessing::HandleExpiredTimer(int timerId)
-{
-    Timer* timer = Timer::FindTimer(timerId);
-    timer->_running = false;
-    _iCanWalProcessingOut->Trace("Timer \"%s\" expired", timer->_name);
-    Event event;
-    event.type = EventType::timerExpiry;
-    event.timerExpiry.timerId = timerId;
-    HandleEvent(event);
 }
 
 const char* CanWalProcessing::ToString(FrontPassengerSeatState frontPassengerSeatState)
@@ -279,8 +283,8 @@ const char* CanWalProcessing::ToString(WalCancelState walCancelState)
 {
     switch (walCancelState)
     {
-    case WalCancelState::noDoorOpenedAfterUnlockCancelNotPossible: return "noDoorOpenedAfterUnlockCancelNotPossible";
-    case WalCancelState::doorOpenedAfterUnlockCancelPossible: return "doorOpenedAfterUnlockCancelPossible";
+    case WalCancelState::noDoorOpenedAfterUnlockCancellationNotPossible: return "noDoorOpenedAfterUnlockCancellationNotPossible";
+    case WalCancelState::doorOpenedAfterUnlockCancellationPossible: return "doorOpenedAfterUnlockCancellationPossible";
     case WalCancelState::walCancelled: return "walCancelled";
     default: return "";
     }
@@ -310,6 +314,8 @@ const char* CanWalProcessing::ToString(MainWalState mainWalState)
 
 void CanWalProcessing::HandleEvent(Event event)
 {
+    TraceEvent(event);
+    
     auto previousFrontPassengerSeatState = _frontPassengerSeatState;
     bool frontPassengerSeatStateChanged = false;
     switch (_frontPassengerSeatState)
@@ -392,43 +398,62 @@ void CanWalProcessing::HandleEvent(Event event)
     if (_frontPassengerSeatState != previousFrontPassengerSeatState)
     {
         frontPassengerSeatStateChanged = true;
-        _iCanWalProcessingOut->Trace("Changing _frontPassengerSeatState from %s to %s", ToString(previousFrontPassengerSeatState), ToString(_frontPassengerSeatState));
+        _iOs->Trace("Changing _frontPassengerSeatState from %s to %s", ToString(previousFrontPassengerSeatState), ToString(_frontPassengerSeatState));
     }
 
     // WAL can be cancelled by the remote control
-    // However if we unlock the car with the remote control without opening a door afterwards
-    // we want it to close again automatically so in that case WAL must not be cancelled. Therefore
-    // the cancel action is only allowed after a door has been opened.
-    // The cancellation lasts until all doors are closed and locked, or until the car has moved.
+    // During execution it can also be cancelled by the door handle buttons to stop
+    // the windows and roof being closed
+    // If we unlock the car with the remote control without opening a door afterwards
+    // we want it to close again automatically so in that case WAL must not be cancelled
+    // Therefore the cancel action is only allowed after the car in unlocked and a door
+    // has been opened
+    // When a door is opened with the door handle buttons we will receive events but it
+    // is not the user's intent to cancel WAL
+    // For that reason door handle button presses may only cancel WAL during execution
+    // The cancellation lasts until all doors are closed and locked, or until the car has moved
+    // Summary:
+    // Unlock car -> door opened -> cancellation possible by remote control
+    // (A) -> door closed -> executing WAL -> cancellation possible by both remote control and door handle buttons
+    // (B) -> WAL cancelled -> car locked by user / car is being driven -> new WAL possible
     auto previousWalCancelState = _walCancelState;
     bool walCancelStateChanged = false;
     switch (_walCancelState)
     {
-    case WalCancelState::noDoorOpenedAfterUnlockCancelNotPossible:
+    case WalCancelState::noDoorOpenedAfterUnlockCancellationNotPossible:
         switch (event.type)
         {
         case EventType::doorOpenStatus:
             if (!DoorsBootAndBonnetAreClosed())
             {
-                _walCancelState = WalCancelState::doorOpenedAfterUnlockCancelPossible;
+                _walCancelState = WalCancelState::doorOpenedAfterUnlockCancellationPossible;
+            }
+            break;
+        case EventType::remoteControlButtonPressed:
+        case EventType::doorHandleButtonPressed:
+            //if (!_remoteControlIsBeingUsed)
+            // At any time during execution WAL can be cancelled
+            // In all other situations we must wait until a doors opens before we may cancel
+            if (_mainWalState == MainWalState::executing)
+            {
+                _walCancelState = WalCancelState::walCancelled;
             }
             break;
         default:
             break;
         }
         break;
-    case WalCancelState::doorOpenedAfterUnlockCancelPossible:
+    case WalCancelState::doorOpenedAfterUnlockCancellationPossible:
         switch (event.type)
         {
         case EventType::doorOpenStatus:
         case EventType::doorLockStatus:
-            if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked() && _mainWalState != MainWalState::executing)
+            if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
             {
-                _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancelNotPossible;
+                _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancellationNotPossible;
             }
             break;
-        case EventType::remoteControlUnlockButtonPressed:
-        case EventType::remoteControlLockButtonPressed:
+        case EventType::remoteControlButtonPressed:
             //if (!_remoteControlIsBeingUsed)
             {
                 _walCancelState = WalCancelState::walCancelled;
@@ -443,15 +468,15 @@ void CanWalProcessing::HandleEvent(Event event)
         {
         case EventType::doorOpenStatus:
         case EventType::doorLockStatus:
-            if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked() && _mainWalState != MainWalState::executing)
+            if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
             {
-                _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancelNotPossible;
+                _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancellationNotPossible;
             }
             break;
         case EventType::vehicleSpeed:
             if (_storedReportedStatuses.vehicleSpeed > 0)
             {
-                _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancelNotPossible;
+                _walCancelState = WalCancelState::noDoorOpenedAfterUnlockCancellationNotPossible;
             }
             break;
         default:
@@ -462,7 +487,7 @@ void CanWalProcessing::HandleEvent(Event event)
     if (_walCancelState != previousWalCancelState)
     {
         walCancelStateChanged = true;
-        _iCanWalProcessingOut->Trace("Changing _walCancelState from %s to %s", ToString(previousWalCancelState), ToString(_walCancelState));
+        _iOs->Trace("Changing _walCancelState from %s to %s", ToString(previousWalCancelState), ToString(_walCancelState));
     }
 
     auto previousDoorOpenSequenceAfterUnlockState = _doorOpenSequenceAfterUnlockState;
@@ -536,7 +561,7 @@ void CanWalProcessing::HandleEvent(Event event)
     }
     if (_doorOpenSequenceAfterUnlockState != previousDoorOpenSequenceAfterUnlockState)
     {
-        _iCanWalProcessingOut->Trace("Changing _doorOpenSequenceAfterUnlockState from %s to %s", ToString(previousDoorOpenSequenceAfterUnlockState), ToString(_doorOpenSequenceAfterUnlockState));
+        _iOs->Trace("Changing _doorOpenSequenceAfterUnlockState from %s to %s", ToString(previousDoorOpenSequenceAfterUnlockState), ToString(_doorOpenSequenceAfterUnlockState));
     }
 
     // The main WAL state machine waits for all conditions to become "go"
@@ -544,16 +569,11 @@ void CanWalProcessing::HandleEvent(Event event)
     // The execution of locking the car takes some time after which we can be certain that the
     // received statuses are "no go" and we can return to the initial state
     // At all times during "go" or "executing" the process can be stopped via the remote control
-    // which is monitores by the WAL cancel state machine
+    // which is monitored by the WAL cancel state machine
     auto previousMainWalState = _mainWalState;
     switch (_mainWalState)
     {
     case MainWalState::noGo:
-// if (event.type == EventType::timerExpiry)
-// {
-//     _mainWalState = MainWalState::go;
-//     StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionShort);
-// }
         // EventForGoCondition will check the event type for us
         if (EventForGoCondition(event.type, frontPassengerSeatStateChanged, walCancelStateChanged))
         {
@@ -599,10 +619,6 @@ void CanWalProcessing::HandleEvent(Event event)
                 break;
             case Timers::intermediateCountdownSoundInterval:
                 break;
-// case Timers::stopWalExecution:
-//     StartTimer(Timers::intermediateCountdownSoundInterval, TimerPeriod::intermediateCountdownSoundInterval);
-//     _mainWalState = MainWalState::noGo;
-//     break;
             default:
                 break;
             }
@@ -641,19 +657,21 @@ void CanWalProcessing::HandleEvent(Event event)
                 break;
             }
             break;
+        case EventType::windowRoofAndMirrorControl:
+            // Another ECU might send this message, thereby stopping the movement of windows and roof
+            // To minimize that effect send a close message now
+            SendCloseWindowsAndRoofAndFoldMirrorsMessage();
+            break;
         default:
-            // EventForGoCondition will check the event type for us
-            if (EventForGoCondition(event.type, frontPassengerSeatStateChanged, walCancelStateChanged))
+            // Only an active cancellation may stop us now
+            if (_walCancelState == WalCancelState::walCancelled)
             {
-                if (!GoConditionActive())
+                if (TimerRunning(Timers::closeWindowsAndRoofCanMessageInterval))
                 {
-                    if (TimerRunning(Timers::closeWindowsAndRoofCanMessageInterval))
-                    {
-                        StopTimer(Timers::closeWindowsAndRoofCanMessageInterval);
-                    }
-                    StopTimer(Timers::stopWalExecution);
-                    _mainWalState = MainWalState::noGo;
+                    StopTimer(Timers::closeWindowsAndRoofCanMessageInterval);
                 }
+                StopTimer(Timers::stopWalExecution);
+                _mainWalState = MainWalState::noGo;
             }
             break;
         }
@@ -661,7 +679,70 @@ void CanWalProcessing::HandleEvent(Event event)
     }
     if (_mainWalState != previousMainWalState)
     {
-        _iCanWalProcessingOut->Trace("Changing _mainWalState from %s to %s", ToString(previousMainWalState), ToString(_mainWalState));
+        _iOs->Trace("Changing _mainWalState from %s to %s", ToString(previousMainWalState), ToString(_mainWalState));
+    }
+}
+
+void CanWalProcessing::TraceEvent(Event event)
+{
+    switch (event.type)
+    {
+    case EventType::timerExpiry:
+        _iOs->Trace("Event timerExpiry(%s)", Timer::FindTimer(event.timerExpiry.timerId)->_name);
+        break;
+    case EventType::frontPassengerSeatOccupationStatus:
+        _iOs->Trace("Event frontPassengerSeatOccupationStatus(%d)", _storedReportedStatuses.frontPassengerSeatIsOccupied);
+        break;
+    case EventType::doorOpenStatus:
+        _iOs->Trace(
+            "Event doorOpenStatus(%d,%d,%d,%d,%d,%d)",
+            _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen,
+            _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen,
+            _storedReportedStatuses.doorOpenStatuses.frontPassengerSideDoorIsOpen,
+            _storedReportedStatuses.doorOpenStatuses.rearPassengerSideDoorIsOpen,
+            _storedReportedStatuses.doorOpenStatuses.bootIsOpen,
+            _storedReportedStatuses.doorOpenStatuses.bonnetIsOpen
+        );
+        break;
+    case EventType::doorLockStatus:
+        _iOs->Trace("Event doorLockStatus(%d,%d,%d,%d)",
+            _storedReportedStatuses.doorLockStatuses.frontDriverSideDoorIsLocked,
+            _storedReportedStatuses.doorLockStatuses.rearDriverSideDoorIsLocked,
+            _storedReportedStatuses.doorLockStatuses.frontPassengerSideDoorIsLocked,
+            _storedReportedStatuses.doorLockStatuses.rearPassengerSideDoorIsLocked
+        );
+        break;
+    case EventType::remoteControlButtonPressed:
+        _iOs->Trace("Event remoteControlButtonPressed");
+        break;
+    case EventType::doorHandleButtonPressed:
+        _iOs->Trace("Event doorHandleButtonPressed");
+        break;
+    case EventType::vehicleSpeed:
+        _iOs->Trace("Event vehicleSpeed(%d)",
+            _storedReportedStatuses.vehicleSpeed
+        );
+        break;
+    case EventType::keyLocation:
+        _iOs->Trace("Event keyLocation(%d)",
+            _storedReportedStatuses.keyIsOutside
+        );
+        break;
+    case EventType::windowRoofAndMirrorControl:
+        //_iCanWalProcessingOs->Trace("Event windowRoofAndMirrorControl");
+        break;
+    case EventType::dateTime:
+        _iOs->Trace("Event dateTime(%d-%02d-%02d %02d:%02d:%02d)",
+            event.dateTime.year,
+            event.dateTime.month,
+            event.dateTime.day,
+            event.dateTime.hour,
+            event.dateTime.minute,
+            event.dateTime.second
+            );
+        break;
+    default:
+        break;
     }
 }
 
@@ -670,15 +751,15 @@ void CanWalProcessing::StartTimer(int timerId, TimerPeriod timerPeriod)
     Timer* timer = Timer::FindTimer(timerId);
     if (timer->_running)
     {
-        _iCanWalProcessingOut->StopTimer(timerId);
+        _iOs->StopTimer(timerId);
     }
     else
     {
         timer->_running = true;
     }
 
-    _iCanWalProcessingOut->Trace("Starting timer \"%s\" with a period of %d ms", timer->_name, timerPeriod);
-    _iCanWalProcessingOut->StartTimer(timerId, (int)timerPeriod);
+    _iOs->Trace("Starting timer \"%s\" with a period of %d ms", timer->_name, timerPeriod);
+    _iOs->StartTimer(timerId, (int)timerPeriod);
 }
 
 void CanWalProcessing::StopTimer(int timerId)
@@ -686,8 +767,8 @@ void CanWalProcessing::StopTimer(int timerId)
     Timer* timer = Timer::FindTimer(timerId);
     if (timer->_running)
     {
-        _iCanWalProcessingOut->Trace("Stopping timer \"%s\"", timer->_name);
-        _iCanWalProcessingOut->StopTimer(timerId);
+        _iOs->Trace("Stopping timer \"%s\"", timer->_name);
+        _iOs->StopTimer(timerId);
         timer->_running = false;
     }
 }
@@ -745,13 +826,13 @@ void CanWalProcessing::SendLockDoorsMessage()
     {
         data[index + 4] = _storedReportedStatuses.doorLockControlLast4Bytes[index];
     }
-    _iCanWalProcessingOut->SendCanMessage(0x26E, sizeof(data), data);
+    _iCan->SendCanMessage((int)CanId::doorLockControl, sizeof(data), data);
 }
 
 void CanWalProcessing::SendCloseWindowsAndRoofAndFoldMirrorsMessage()
 {
     unsigned char data[8] = { 0x1B, 0x1B, 0x1B, 0x52, 0xFF, 0xFF, 0xFF, 0xFF };
-    _iCanWalProcessingOut->SendCanMessage(0x26E, sizeof(data), data);
+    _iCan->SendCanMessage(int(CanId::windowRoofAndMirrorControl), sizeof(data), data);
 }
 
 CanWalProcessing::Timer* CanWalProcessing::Timer::_lastTimer = nullptr;
