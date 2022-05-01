@@ -1,12 +1,22 @@
 {
-    "files.associations": {
-        "list": "cpp",
-        "map": "cpp",
-        "functional": "cpp",
-        "dmx_types.h": "c",
-        "driver.h": "c",
-        "hal.h": "c",
-        "intr_handlers.h": "c"
-    },
-    "cmake.configureOnOpen": true
+  "idf.portWin": "COM9",
+  "files.associations": {
+    "task.h": "c",
+    "freertos.h": "c",
+    "stdio.h": "c",
+    "gpio.h": "c",
+    "sdkconfig.h": "c",
+    "thread": "cpp",
+    "tuple": "cpp",
+    "array": "cpp",
+    "deque": "cpp",
+    "list": "cpp",
+    "string": "cpp",
+    "unordered_map": "cpp",
+    "vector": "cpp",
+    "string_view": "cpp",
+    "initializer_list": "cpp",
+    "*.tcc": "cpp"
+  },
+  "idf.adapterTargetName": "esp32"
 }
