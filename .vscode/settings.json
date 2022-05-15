@@ -1,5 +1,5 @@
 {
-  "idf.portWin": "COM9",
+  "idf.portWin": "COM3",
   "files.associations": {
     "task.h": "c",
     "freertos.h": "c",
