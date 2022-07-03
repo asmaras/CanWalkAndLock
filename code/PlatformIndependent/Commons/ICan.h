@@ -22,6 +22,7 @@ namespace PlatformIndependent::Commons
             dateTime = 0x2F8,
             seatbeltAndSeatOccupancyStatus = 0x2FA,
             doorStatus = 0x2FC,
+            handbrakeStatus = 0x34F,
             setDateTime = 0x39E
         };
 

@@ -6,7 +6,7 @@ namespace PlatformIndependent
         _useRemoteControl(useRemoteControl)
     {
         // At power-up we assume all doors to be closed and locked,
-        // the key to be outside and the mirrors to be unfolded
+        // the key to be outside, the mirrors to be unfolded and the handbrake to be active
         // This should be consistent in the stored reported statuses as well as in the states
         _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen = false;
         _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen = false;
@@ -18,35 +18,47 @@ namespace PlatformIndependent
         _storedReportedStatuses.doorLockStatuses.rearDriverSideDoorIsLocked = true;
         _storedReportedStatuses.doorLockStatuses.frontPassengerSideDoorIsLocked = true;
         _storedReportedStatuses.doorLockStatuses.rearPassengerSideDoorIsLocked = true;
-        _storedReportedStatuses.keyIsOutside = false;
+        _storedReportedStatuses.keyIsOutside = true;
         _storedReportedStatuses.mirrorsAreFolded = false;
         for (int index = 0; index < 4; index++)
         {
             _storedReportedStatuses.doorLockControlLast4Bytes[index] = 0;
         }
+        _storedReportedStatuses.handbrakeIsActive = true;
         _frontPassengerSeatState = FrontPassengerSeatState::vacated;
-        _walCancelState = WalCancelState::waitForDoorOpenCancellationNotPossible;
-        _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock;
+        _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
+        _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock;
         _mainWalState = MainWalState::noGo;
         
         _iCan = nullptr;
         _iRemoteControl = nullptr;
         _iSound = nullptr;
-        _closingWindowsAndRoofAndFoldingMirrors = false;
+        _storeValueEnableWal = false;
+        _storeValueMayCloseWindowsAndRoof = false;
         _performingRemoteControlOperation = false;
     }
 
     void CanWalProcessing::SetOutputInterfaces(
+        PlatformIndependent::Commons::IStore::Output* iStore,
         PlatformIndependent::Commons::IOs::Output* iOs,
         PlatformIndependent::Commons::ICan::Output* iCan,
         PlatformIndependent::Commons::IRemoteControl::Output* iRemoteControl,
         PlatformIndependent::Commons::ISound::Output* iSound
     )
     {
+        _iStore = iStore;
         PlatformIndependent::Commons::Os::SetOutputInterface(iOs);
         _iCan = iCan;
         _iRemoteControl = iRemoteControl;
         _iSound = iSound;
+    }
+
+    void CanWalProcessing::Start()
+    {
+        _storeValueEnableWal = _iStore->IPiStoreGetEnableWAL();
+        Trace("Getting _storeValueEnableWal(%s)", _storeValueEnableWal ? "true" : "false");
+        _storeValueMayCloseWindowsAndRoof = _iStore->IPiStoreGetMayCloseWindowsAndRoof();
+        Trace("Getting _storeValueMayCloseWindowsAndRoof(%s)", _storeValueMayCloseWindowsAndRoof ? "true" : "false");
     }
 
     void CanWalProcessing::HandleExpiredTimer(int timerId, const char* timerName)
@@ -71,7 +83,6 @@ namespace PlatformIndependent
                 _storedReportedStatuses.doorOpenStatuses.frontPassengerSideDoorIsOpen = doorIsOpen;
                 Event event;
                 event.type = EventType::doorOpenStatus;
-                event.doorOpenStatus.frontPassengerSideDoorStatusChanged = true;
                 HandleEvent(event);
             }
             // The lock status is in bits 0 and 1 of byte 0
@@ -94,7 +105,6 @@ namespace PlatformIndependent
                 _storedReportedStatuses.doorOpenStatuses.rearPassengerSideDoorIsOpen = doorIsOpen;
                 Event event;
                 event.type = EventType::doorOpenStatus;
-                event.doorOpenStatus.rearPassengerSideDoorStatusChanged = true;
                 HandleEvent(event);
             }
             // The lock status is in bits 0 and 1 of byte 0
@@ -117,7 +127,6 @@ namespace PlatformIndependent
                 _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen = doorIsOpen;
                 Event event;
                 event.type = EventType::doorOpenStatus;
-                event.doorOpenStatus.frontDriverSideDoorStatusChanged = true;
                 HandleEvent(event);
             }
             // The lock status is in bits 0 and 1 of byte 0
@@ -140,7 +149,6 @@ namespace PlatformIndependent
                 _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen = doorIsOpen;
                 Event event;
                 event.type = EventType::doorOpenStatus;
-                event.doorOpenStatus.rearDriverSideDoorStatusChanged = true;
                 HandleEvent(event);
             }
             // The lock status is in bits 0 and 1 of byte 0
@@ -249,7 +257,7 @@ namespace PlatformIndependent
                 "DateTime(%d-%02d-%02d %02d:%02d:%02d)",
                 data[5] + (data[6] << 8),
                 data[4] >> 4,
-                data[3] + 1,
+                data[3],
                 data[0],
                 data[1],
                 data[2]
@@ -278,7 +286,6 @@ namespace PlatformIndependent
             if (frontDriverSideDoorIsOpen != _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen)
             {
                 _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen = frontDriverSideDoorIsOpen;
-                event.doorOpenStatus.frontDriverSideDoorStatusChanged = true;
                 handleDoorOpenStatusEvent = true;
             }
             // The front passenger side door open status is in bit 2 of byte 1
@@ -286,7 +293,6 @@ namespace PlatformIndependent
             if (frontPassengerSideDoorIsOpen != _storedReportedStatuses.doorOpenStatuses.frontPassengerSideDoorIsOpen)
             {
                 _storedReportedStatuses.doorOpenStatuses.frontPassengerSideDoorIsOpen = frontPassengerSideDoorIsOpen;
-                event.doorOpenStatus.frontPassengerSideDoorStatusChanged = true;
                 handleDoorOpenStatusEvent = true;
             }
             // The rear driver side door open status is in bit 4 of byte 1
@@ -294,7 +300,6 @@ namespace PlatformIndependent
             if (rearDriverSideDoorIsOpen != _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen)
             {
                 _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen = rearDriverSideDoorIsOpen;
-                event.doorOpenStatus.rearDriverSideDoorStatusChanged = true;
                 handleDoorOpenStatusEvent = true;
             }
             // The rear passenger side door open status is in bit 6 of byte 1
@@ -302,7 +307,6 @@ namespace PlatformIndependent
             if (rearPassengerSideDoorIsOpen != _storedReportedStatuses.doorOpenStatuses.rearPassengerSideDoorIsOpen)
             {
                 _storedReportedStatuses.doorOpenStatuses.rearPassengerSideDoorIsOpen = rearPassengerSideDoorIsOpen;
-                event.doorOpenStatus.rearPassengerSideDoorStatusChanged = true;
                 handleDoorOpenStatusEvent = true;
             }
             // The boot open status is in bit 0 of byte 2
@@ -326,6 +330,39 @@ namespace PlatformIndependent
             }
         }
         break;
+        case PlatformIndependent::Commons::ICan::CanId::handbrakeStatus:
+        {
+            static int handbrakeToggleRepeatCount = 0;
+            // Bits 0 and 1 of byte 0 are 2 when the handbrake is active
+            bool handbrakeIsActive = (data[0] & 0x03) == 2;
+            if (handbrakeIsActive != _storedReportedStatuses.handbrakeIsActive)
+            {
+                _storedReportedStatuses.handbrakeIsActive = handbrakeIsActive;
+                if (TimerRunning(Timers::handbrakeToggleRepeat))
+                {
+                    handbrakeToggleRepeatCount++;
+                    Trace("handbrakeToggleRepeatCount(%d)", handbrakeToggleRepeatCount);
+                    if (handbrakeToggleRepeatCount == 2)
+                    {
+                        Event event;
+                        event.type = EventType::handbrakeToggleRepeat;
+                        HandleEvent(event);
+                    }
+                    else if (handbrakeToggleRepeatCount == 6)
+                    {
+                        _storeValueEnableWal = !_storeValueEnableWal;
+                        Trace("Setting _storeValueEnableWal(%s)", _storeValueEnableWal ? "true" : "false");
+                        _iStore->IPiStoreSetEnableWAL(_storeValueEnableWal);
+                    }
+                }
+                else
+                {
+                    handbrakeToggleRepeatCount = 1;
+                }
+                StartTimer(Timers::handbrakeToggleRepeat, TimerPeriod::handbrakeToggleRepeatTime);
+            }
+        }
+        break;
         default:
             break;
         }
@@ -334,9 +371,6 @@ namespace PlatformIndependent
     void CanWalProcessing::IPiRemoteControlOperationFinished()
     {
         _performingRemoteControlOperation = false;
-        Event event;
-        event.type = EventType::remoteControlOperationFinished;
-        HandleEvent(event);
     }
 
     const char* CanWalProcessing::ToString(FrontPassengerSeatState frontPassengerSeatState)
@@ -354,8 +388,8 @@ namespace PlatformIndependent
     {
         switch (walCancelState)
         {
-        case WalCancelState::waitForDoorOpenCancellationNotPossible: return "waitForDoorOpenCancellationNotPossible";
-        case WalCancelState::cancellationPossible: return "cancellationPossible";
+        case WalCancelState::lockedOrNoDoorOpenedAfterUnlock: return "lockedOrNoDoorOpenedAfterUnlock";
+        case WalCancelState::cancellationBeforeExecutionPossible: return "cancellationBeforeExecutionPossible";
         case WalCancelState::walCancelled: return "walCancelled";
         default: return "";
         }
@@ -365,7 +399,7 @@ namespace PlatformIndependent
     {
         switch (doorOpenSequenceAfterUnlockState)
         {
-        case DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock: return "noDoorOpenedAfterUnlock";
+        case DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock: return "lockedOrNoDoorOpenedAfterUnlock";
         case DoorOpenSequenceAfterUnlockState::driverDoorOpenedAfterUnlock: return "driverDoorOpenedAfterUnlock";
         case DoorOpenSequenceAfterUnlockState::onlyNonDriverDoorOpenedAfterUnlock: return "onlyNonDriverDoorOpenedAfterUnlock";
         default: return "";
@@ -381,14 +415,6 @@ namespace PlatformIndependent
         case MainWalState::executing: return "executing";
         default: return "";
         }
-    }
-
-    CanWalProcessing::Event::Event()
-    {
-        doorOpenStatus.frontPassengerSideDoorStatusChanged = false;
-        doorOpenStatus.rearPassengerSideDoorStatusChanged = false;
-        doorOpenStatus.frontDriverSideDoorStatusChanged = false;
-        doorOpenStatus.rearDriverSideDoorStatusChanged = false;
     }
 
     void CanWalProcessing::HandleEvent(Event event)
@@ -480,78 +506,101 @@ namespace PlatformIndependent
             Trace("Changing _frontPassengerSeatState from %s to %s", ToString(previousFrontPassengerSeatState), ToString(_frontPassengerSeatState));
         }
 
-        // WAL can be cancelled by the remote control
-        // During execution it can be cancelled by both remote control and door handle buttons which
-        // will stop the windows and roof being closed and will prevent WAL from locking the car again
-        // If we unlock the car with the remote control without opening a door afterwards
-        // we want it to lock again automatically so in that case WAL must not be cancelled
-        // Therefore the cancel action is only allowed after the car is unlocked and a door
-        // has been opened
-        // When a door is unlocked with the door handle buttons (and then opened) we will receive
-        // events but it is not the user's intent to cancel WAL
-        // For that reason door handle button presses may only cancel WAL during execution
+        // WAL can be cancelled before and during execution
+        // Before execution it can be cancelled by the remote control and handbrake toggle, but not
+        // by the door handle buttons
+        // During execution the closing of windows and roof can be stopped by both remote control
+        // and door handle buttons
+        // During the first few seconds of execution a button press will also cancel WAL to make it
+        // possible for the user to cancel if they forgot to do it beforehand
+        // After that period a button press will only stop the motion but WAL will lock the car
+        // again under the right conditions
         // The cancellation lasts until all doors are closed and locked, or until the car has moved
+        //
+        // Remote control considerations:
+        //   When WAL is not being executed:
+        //     When locking the car with the lock button there is no need for cancellation
+        //     If the driver door is open a press of the lock button will cancel WAL
+        //     If we unlock the car with the remote control we want WAL to be armed
+        //     In that case the car will lock again automatically if we don't open a door
+        //     From the time we open a door it is possible to cancel WAL
+        //     Then a press of the unlock button will cancel WAL even if a door is open
+        //   When WAL is being executed:
+        //     A press of the lock or unlock button will cancel execution
+        //     If pressed during the first few seconds of execution it will also cancel WAL as
+        //     described
+        //
+        // Door handle button considerations:
+        //   When WAL is not being executed:
+        //     When locking the car with the door handle button there is no need for cancellation
+        //     If we unlock the car with the door handle button we want WAL to be armed
+        //     In that case the car will lock again automatically if we don't open a door
+        //     When the car is unlocked, we don't receive any door handle button events anymore
+        //     except when using it to lock the car
+        //     This renders the door handle buttons useless for WAL cancellation in case the car is
+        //     unlocked
+        //   When WAL is being executed:
+        //     A press of the door handle button will cancel execution
+        //     If pressed during the first few seconds of execution it will also cancel WAL as
+        //     described
+        //
+        // About handbrake toggle:
+        //   By toggling the handbrake on/off or off/on quickly, WAL can be cancelled before
+        //   exiting the car
+        // 
         // Summary:
-        // Unlock car with remote control -> doors remain closed -> automatically lock
-        // Unlock car with door handle button -> doors remain closed -> WAL cancelled
-        // Unlock car -> door opened -> cancellation possible by remote control and door flash -> situation (A)
+        // Unlock car with remote control or door handle button -> doors remain closed -> automatically lock
+        // Unlock car -> door opened -> cancellation possible by remote control and handbrake toggle -> situation (A)
         //   Situation (A) -> door closed -> executing WAL -> cancellation possible by all means
         //   Situation (A) -> WAL cancelled -> car locked by user / car is being driven -> new WAL possible
         auto previousWalCancelState = _walCancelState;
         bool walCancelStateChanged = false;
-        bool walCancelOneTimeTrigger = false;
+        bool walCancelledDuringExecutionTrigger = false;
         switch (_walCancelState)
         {
-        case WalCancelState::waitForDoorOpenCancellationNotPossible:
+        case WalCancelState::lockedOrNoDoorOpenedAfterUnlock:
+            // This state will also be entered when the car is driven and the doors are automatically locked
             switch (event.type)
             {
             case EventType::doorOpenStatus:
                 if (!DoorsBootAndBonnetAreClosed())
                 {
-                    _walCancelState = WalCancelState::cancellationPossible;
+                    _walCancelState = WalCancelState::cancellationBeforeExecutionPossible;
                 }
                 break;
             case EventType::remoteControlButtonPressed:
             case EventType::doorHandleButtonPressed:
                 // At any time during execution WAL can be cancelled
-                // In all other situations we must wait until a door opens before we may cancel
                 if (_mainWalState == MainWalState::executing)
                 {
-                    walCancelOneTimeTrigger = true;
-                    Trace("One-time cancel trigger is set");
+                    if (TimerRunning(Timers::permanentCancelPeriodDuringWalExecution))
+                    {
+                        _walCancelState = WalCancelState::walCancelled;
+                    }
+                    walCancelledDuringExecutionTrigger = true;
+                    Trace("Cancelled during execution trigger is set");
                 }
                 break;
             default:
                 break;
             }
             break;
-        case WalCancelState::cancellationPossible:
+        case WalCancelState::cancellationBeforeExecutionPossible:
             switch (event.type)
             {
             case EventType::doorOpenStatus:
             case EventType::doorLockStatus:
                 if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
                 {
-                    _walCancelState = WalCancelState::waitForDoorOpenCancellationNotPossible;
-                }
-                else if (event.type == EventType::doorOpenStatus)
-                {
-                    if (CheckForDoorFlash(event))
-                    {
-                        _walCancelState = WalCancelState::walCancelled;
-                        break;
-                    }
+                    _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
             case EventType::remoteControlButtonPressed:
+            case EventType::handbrakeToggleRepeat:
                 _walCancelState = WalCancelState::walCancelled;
                 break;
             default:
                 break;
-            }
-            if (_walCancelState != WalCancelState::cancellationPossible)
-            {
-                EndDoorFlashDetection();
             }
             break;
         case WalCancelState::walCancelled:
@@ -561,13 +610,13 @@ namespace PlatformIndependent
             case EventType::doorLockStatus:
                 if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
                 {
-                    _walCancelState = WalCancelState::waitForDoorOpenCancellationNotPossible;
+                    _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
             case EventType::vehicleSpeed:
-                if (_storedReportedStatuses.vehicleSpeed > 0)
+                if (_storedReportedStatuses.vehicleSpeed > _drivingSpeedThreshold)
                 {
-                    _walCancelState = WalCancelState::waitForDoorOpenCancellationNotPossible;
+                    _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
             default:
@@ -584,7 +633,8 @@ namespace PlatformIndependent
         auto previousDoorOpenSequenceAfterUnlockState = _doorOpenSequenceAfterUnlockState;
         switch (_doorOpenSequenceAfterUnlockState)
         {
-        case DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock:
+        case DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock:
+            // This state will also be entered when the car is driven and the doors are automatically locked
             switch (event.type)
             {
             case EventType::doorOpenStatus:
@@ -616,7 +666,7 @@ namespace PlatformIndependent
             case EventType::doorLockStatus:
                 if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
                 {
-                    _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock;
+                    _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
             default:
@@ -635,14 +685,14 @@ namespace PlatformIndependent
                 {
                     if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
                     {
-                        _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock;
+                        _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock;
                     }
                 }
                 break;
             case EventType::doorLockStatus:
                 if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
                 {
-                    _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::noDoorOpenedAfterUnlock;
+                    _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
             default:
@@ -666,9 +716,9 @@ namespace PlatformIndependent
         {
         case MainWalState::noGo:
             // EventForGoCondition will check the event type for us
-            if (EventForGoCondition(event.type, frontPassengerSeatStateChanged, walCancelStateChanged, walCancelOneTimeTrigger))
+            if (EventForGoCondition(event.type, frontPassengerSeatStateChanged, walCancelStateChanged))
             {
-                if (GoConditionActive(walCancelOneTimeTrigger))
+                if (GoConditionActive())
                 {
                     if (_doorOpenSequenceAfterUnlockState == DoorOpenSequenceAfterUnlockState::onlyNonDriverDoorOpenedAfterUnlock)
                     {
@@ -696,20 +746,27 @@ namespace PlatformIndependent
                 {
                 case Timers::lockCarWait:
                     LockDoors();
-                    if (_storedReportedStatuses.mirrorsAreFolded)
+                    if (_doorOpenSequenceAfterUnlockState == DoorOpenSequenceAfterUnlockState::driverDoorOpenedAfterUnlock)
                     {
-                        if (!_performingRemoteControlOperation)
+                        bool mayCloseWindowsAndRoof = !_storedReportedStatuses.mirrorsAreFolded;
+                        if (mayCloseWindowsAndRoof != _storeValueMayCloseWindowsAndRoof)
                         {
-                            StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionShort);
+                            _storeValueMayCloseWindowsAndRoof = mayCloseWindowsAndRoof;
+                            Trace("Setting _storeValueMayCloseWindowsAndRoof(%s)", _storeValueMayCloseWindowsAndRoof ? "true" : "false");
+                            _iStore->IPiStoreSetMayCloseWindowsAndRoof(_storeValueMayCloseWindowsAndRoof);
                         }
+                    }
+                    if (_storeValueMayCloseWindowsAndRoof)
+                    {
+                        StartTimer(Timers::foldMirrorsCanMessageWait, TimerPeriod::foldMirrorsCanMessageWait);
+                        StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionAfterClosingWindowsAndRoof);
                     }
                     else
                     {
-                        _closingWindowsAndRoofAndFoldingMirrors = true;
-                        SendCloseWindowsAndRoofAndFoldMirrorsMessage();
-                        StartTimer(Timers::closeWindowsAndRoofCanMessageInterval, TimerPeriod::closeWindowsAndRoofCanMessageInterval);
-                        StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionLong);
+                        StartTimer(Timers::foldMirrorsCanMessageWait, TimerPeriod::foldMirrorsCanMessageWait);
+                        StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionAfterLocking);
                     }
+                    StartTimer(Timers::permanentCancelPeriodDuringWalExecution, TimerPeriod::permanentCancelPeriodDuringWalExecution);
                     _mainWalState = MainWalState::executing;
                     break;
                 case Timers::intermediateCountdownSoundInterval:
@@ -720,9 +777,9 @@ namespace PlatformIndependent
                 break;
             default:
                 // EventForGoCondition will check the event type for us
-                if (EventForGoCondition(event.type, frontPassengerSeatStateChanged, walCancelStateChanged, walCancelOneTimeTrigger))
+                if (EventForGoCondition(event.type, frontPassengerSeatStateChanged, walCancelStateChanged))
                 {
-                    if (!GoConditionActive(walCancelOneTimeTrigger))
+                    if (!GoConditionActive())
                     {
                         StopTimer(Timers::lockCarWait);
                         _mainWalState = MainWalState::noGo;
@@ -737,46 +794,46 @@ namespace PlatformIndependent
             case EventType::timerExpiry:
                 switch (event.timerExpiry.timerId)
                 {
-                case Timers::closeWindowsAndRoofCanMessageInterval:
+                case Timers::foldMirrorsCanMessageWait:
+                    SendFoldMirrorsMessage();
+                    if (_storeValueMayCloseWindowsAndRoof)
+                    {
+                        StartTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait, TimerPeriod::closeWindowsAndRoofAndFoldMirrorsCanMessageInterval);
+                    }
+                    break;
+                case Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait:
                     SendCloseWindowsAndRoofAndFoldMirrorsMessage();
-                    StartTimer(Timers::closeWindowsAndRoofCanMessageInterval, TimerPeriod::closeWindowsAndRoofCanMessageInterval);
+                    StartTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait, TimerPeriod::closeWindowsAndRoofAndFoldMirrorsCanMessageInterval);
                     break;
                 case Timers::stopWalExecution:
-                    if (_closingWindowsAndRoofAndFoldingMirrors)
-                    {
-                        StopTimer(Timers::closeWindowsAndRoofCanMessageInterval);
-                        _closingWindowsAndRoofAndFoldingMirrors = false;
-                    }
+                    if (TimerRunning(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait)) StopTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
+                    if (TimerRunning(Timers::permanentCancelPeriodDuringWalExecution)) StopTimer(Timers::permanentCancelPeriodDuringWalExecution);
                     _mainWalState = MainWalState::noGo;
                     break;
                 default:
                     break;
                 }
                 break;
-            case EventType::remoteControlOperationFinished:
-                if (!_closingWindowsAndRoofAndFoldingMirrors)
-                {
-                    _mainWalState = MainWalState::noGo;
-                }
-                break;
             case EventType::windowRoofAndMirrorControl:
-                if (_closingWindowsAndRoofAndFoldingMirrors)
+                if (_storeValueMayCloseWindowsAndRoof && TimerRunning(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait))
                 {
                     // Another ECU might send this message, thereby stopping the movement of windows and roof
-                    // To minimize that effect send a close message now
-                    SendCloseWindowsAndRoofAndFoldMirrorsMessage();
+                    // To minimize that effect introduce a delay before continuing to send messages
+                    StopTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
+                    StartTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait, TimerPeriod::closeWindowsAndRoofAndFoldMirrorsCanMessageWaitAfterStop);
                 }
                 break;
             default:
                 // Only an active cancellation may stop us now
-                if (walCancelOneTimeTrigger)
+                if (walCancelledDuringExecutionTrigger)
                 {
-                    if (_closingWindowsAndRoofAndFoldingMirrors)
+                    if (TimerRunning(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait))
                     {
-                        StopTimer(Timers::closeWindowsAndRoofCanMessageInterval);
-                        _closingWindowsAndRoofAndFoldingMirrors = false;
+                        StopTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
+                        SendStopCloseWindowsAndRoofAndFoldMirrorsMessage();
                     }
                     StopTimer(Timers::stopWalExecution);
+                    if (TimerRunning(Timers::permanentCancelPeriodDuringWalExecution)) StopTimer(Timers::permanentCancelPeriodDuringWalExecution);
                     _mainWalState = MainWalState::noGo;
                 }
                 break;
@@ -834,8 +891,8 @@ namespace PlatformIndependent
         case EventType::windowRoofAndMirrorControl:
             //_iCanWalProcessingOs->Trace("Event windowRoofAndMirrorControl");
             break;
-        case EventType::remoteControlOperationFinished:
-            Trace("Event remoteControlOperationFinished");
+        case EventType::handbrakeToggleRepeat:
+            Trace("Event handbrakeToggleRepeat");
             break;
         default:
             break;
@@ -862,7 +919,7 @@ namespace PlatformIndependent
             _storedReportedStatuses.doorLockStatuses.rearPassengerSideDoorIsLocked;
     }
 
-    bool CanWalProcessing::EventForGoCondition(EventType eventType, bool frontPassengerSeatStateChanged, bool walCancelStateChanged, bool walCancelOneTimeTrigger)
+    bool CanWalProcessing::EventForGoCondition(EventType eventType, bool frontPassengerSeatStateChanged, bool walCancelStateChanged)
     {
         // Besides the event type we are also interested in state changes of other state machines
         return
@@ -870,60 +927,18 @@ namespace PlatformIndependent
             eventType == EventType::doorLockStatus ||
             eventType == EventType::keyLocation ||
             frontPassengerSeatStateChanged ||
-            walCancelStateChanged ||
-            walCancelOneTimeTrigger;
+            walCancelStateChanged;
     }
 
-    bool CanWalProcessing::GoConditionActive(bool walCancelOneTimeTrigger)
+    bool CanWalProcessing::GoConditionActive()
     {
         return
             _storedReportedStatuses.keyIsOutside &&
             _frontPassengerSeatState == FrontPassengerSeatState::vacated &&
             _walCancelState != WalCancelState::walCancelled &&
-            !walCancelOneTimeTrigger &&
             DoorsBootAndBonnetAreClosed() &&
-            !AllDoorsAreLocked();
-    }
-
-    bool CanWalProcessing::CheckForDoorFlash(const Event& event)
-    {
-        if (CheckForDoorFlash(event.doorOpenStatus.frontDriverSideDoorStatusChanged, _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen, Timers::frontDriverSideDoorFlash))
-        {
-            return true;
-        }
-        else if (CheckForDoorFlash(event.doorOpenStatus.rearDriverSideDoorStatusChanged, _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen, Timers::rearDriverSideDoorFlash))
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
-    }
-
-    bool CanWalProcessing::CheckForDoorFlash(bool doorStatusChanged, bool doorIsOpen, int timerId)
-    {
-        if (doorStatusChanged)
-        {
-            if (doorIsOpen)
-            {
-                StartTimer(timerId, TimerPeriod::doorFlashTime);
-            }
-            else
-            {
-                if (TimerRunning(timerId))
-                {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    void CanWalProcessing::EndDoorFlashDetection()
-    {
-        if (TimerRunning(Timers::frontDriverSideDoorFlash)) StopTimer(Timers::frontDriverSideDoorFlash);
-        if (TimerRunning(Timers::rearDriverSideDoorFlash)) StopTimer(Timers::rearDriverSideDoorFlash);
+            !AllDoorsAreLocked() &&
+            _storeValueEnableWal;
     }
 
     void CanWalProcessing::LockDoors()
@@ -956,9 +971,21 @@ namespace PlatformIndependent
         _iCan->IPiCanSendCanMessage(PlatformIndependent::Commons::ICan::CanId::doorLockControl, sizeof(data), data);
     }
 
+    void CanWalProcessing::SendFoldMirrorsMessage()
+    {
+        constexpr unsigned char data[8] = { 0x00, 0x1B, 0x00, 0x52, 0xFF, 0xFF, 0xFF, 0xFF };
+        _iCan->IPiCanSendCanMessage(PlatformIndependent::Commons::ICan::CanId::windowRoofAndMirrorControl, sizeof(data), data);
+    }
+
     void CanWalProcessing::SendCloseWindowsAndRoofAndFoldMirrorsMessage()
     {
-        unsigned char data[8] = { 0x1B, 0x1B, 0x1B, 0x52, 0xFF, 0xFF, 0xFF, 0xFF };
+        constexpr unsigned char data[8] = { 0x1B, 0x1B, 0x1B, 0x52, 0xFF, 0xFF, 0xFF, 0xFF };
+        _iCan->IPiCanSendCanMessage(PlatformIndependent::Commons::ICan::CanId::windowRoofAndMirrorControl, sizeof(data), data);
+    }
+
+    void CanWalProcessing::SendStopCloseWindowsAndRoofAndFoldMirrorsMessage()
+    {
+        constexpr unsigned char data[8] = { 0x00, 0x00, 0x00, 0x50, 0xFF, 0xFF, 0xFF, 0xFF };
         _iCan->IPiCanSendCanMessage(PlatformIndependent::Commons::ICan::CanId::windowRoofAndMirrorControl, sizeof(data), data);
     }
 

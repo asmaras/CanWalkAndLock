@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PlatformIndependent/Commons/IStore.h"
 #include "PlatformIndependent/Commons/Os.h"
 #include "PlatformIndependent/Commons/IOs.h"
 #include "PlatformIndependent/Commons/ICan.h"
@@ -16,11 +17,13 @@ namespace PlatformIndependent
     public:
         CanWalProcessing(bool useRemoteControl);
         void SetOutputInterfaces(
+            PlatformIndependent::Commons::IStore::Output* iStore,
             PlatformIndependent::Commons::IOs::Output* iOs,
             PlatformIndependent::Commons::ICan::Output* iCan,
             PlatformIndependent::Commons::IRemoteControl::Output* iRemoteControl,
             PlatformIndependent::Commons::ISound::Output* iSound
         );
+        void Start();
 
     private:
         // Function calls to input interfaces should always be mutually excluded
@@ -57,6 +60,7 @@ namespace PlatformIndependent
             bool keyIsOutside;
             bool mirrorsAreFolded;
             unsigned char doorLockControlLast4Bytes[4];
+            bool handbrakeIsActive;
         } _storedReportedStatuses;
         // State machine info
         // The states for the various state machines
@@ -69,14 +73,14 @@ namespace PlatformIndependent
         const char* ToString(FrontPassengerSeatState frontPassengerSeatState);
         enum class WalCancelState
         {
-            waitForDoorOpenCancellationNotPossible,
-            cancellationPossible,
+            lockedOrNoDoorOpenedAfterUnlock,
+            cancellationBeforeExecutionPossible,
             walCancelled
         } _walCancelState;
         const char* ToString(WalCancelState walCancelState);
         enum class DoorOpenSequenceAfterUnlockState
         {
-            noDoorOpenedAfterUnlock,
+            lockedOrNoDoorOpenedAfterUnlock,
             driverDoorOpenedAfterUnlock,
             onlyNonDriverDoorOpenedAfterUnlock
         } _doorOpenSequenceAfterUnlockState;
@@ -100,7 +104,7 @@ namespace PlatformIndependent
             vehicleSpeed,
             keyLocation,
             windowRoofAndMirrorControl,
-            remoteControlOperationFinished
+            handbrakeToggleRepeat
         };
         // Timers
         enum class TimerPeriod
@@ -109,10 +113,13 @@ namespace PlatformIndependent
             lockCarWaitShort = 5000,
             lockCarWaitLong = 30000,
             intermediateCountdownSoundInterval = 2000,
-            closeWindowsAndRoofCanMessageInterval = 500,
-            stopWalExecutionShort = 1000,
-            stopWalExecutionLong = 14000,
-            doorFlashTime = 1000
+            foldMirrorsCanMessageWait = 1000,
+            closeWindowsAndRoofAndFoldMirrorsCanMessageInterval = 100,
+            closeWindowsAndRoofAndFoldMirrorsCanMessageWaitAfterStop = 500,
+            stopWalExecutionAfterClosingWindowsAndRoof = 25000,
+            stopWalExecutionAfterLocking = 5000,
+            permanentCancelPeriodDuringWalExecution = 5000,
+            handbrakeToggleRepeatTime = 500
         };
         // Timer variables
         struct Timers
@@ -120,31 +127,23 @@ namespace PlatformIndependent
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(frontPassengerSideSeatOccupationStatusStale);
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(lockCarWait);
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(intermediateCountdownSoundInterval);
-            PLATFORMINDEPENDENCECOMMONS_OSTIMER(closeWindowsAndRoofCanMessageInterval);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(foldMirrorsCanMessageWait);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(stopWalExecution);
-            PLATFORMINDEPENDENCECOMMONS_OSTIMER(frontDriverSideDoorFlash);
-            PLATFORMINDEPENDENCECOMMONS_OSTIMER(rearDriverSideDoorFlash);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(permanentCancelPeriodDuringWalExecution);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(handbrakeToggleRepeat);
         } _timers;
         // Event struct holding event type and parameters
         // Stored statuses are not included as parameters to make code less complex because it only has
         // to look at the stored statuses
         struct Event
         {
-            Event();
-
             EventType type;
             struct
             {
                 int timerId;
                 const char* timerName;
             } timerExpiry;
-            struct
-            {
-                bool frontPassengerSideDoorStatusChanged;
-                bool rearPassengerSideDoorStatusChanged;
-                bool frontDriverSideDoorStatusChanged;
-                bool rearDriverSideDoorStatusChanged;
-            } doorOpenStatus;
             struct
             {
                 int year;
@@ -159,22 +158,24 @@ namespace PlatformIndependent
         void TraceEvent(Event event);
         bool DoorsBootAndBonnetAreClosed();
         bool AllDoorsAreLocked();
-        bool EventForGoCondition(EventType eventType, bool frontPassengerSeatStateChanged, bool walCancelStateChanged, bool walCancelTriggered);
-        bool GoConditionActive(bool walCancelTriggered);
-        bool CheckForDoorFlash(const Event& event);
-        bool CheckForDoorFlash(bool doorStatusChanged, bool doorIsOpen, int timerId);
-        void EndDoorFlashDetection();
+        bool EventForGoCondition(EventType eventType, bool frontPassengerSeatStateChanged, bool walCancelStateChanged);
+        bool GoConditionActive();
         void LockDoors();
         void SendLockDoorsMessage();
+        void SendFoldMirrorsMessage();
         void SendCloseWindowsAndRoofAndFoldMirrorsMessage();
+        void SendStopCloseWindowsAndRoofAndFoldMirrorsMessage();
         // Nicer version with parameter type TimerPeriod (base class takes an int)
         void StartTimer(int timerId, TimerPeriod timerPeriod);
 
         const bool _useRemoteControl;
+        PlatformIndependent::Commons::IStore::Output* _iStore;
         PlatformIndependent::Commons::ICan::Output* _iCan;
         PlatformIndependent::Commons::IRemoteControl::Output* _iRemoteControl;
         PlatformIndependent::Commons::ISound::Output* _iSound;
-        bool _closingWindowsAndRoofAndFoldingMirrors;
+        bool _storeValueEnableWal;
+        bool _storeValueMayCloseWindowsAndRoof;
         bool _performingRemoteControlOperation;
+        static constexpr int _drivingSpeedThreshold = 5 * 10;
     };
 }

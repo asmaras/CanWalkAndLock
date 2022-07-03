@@ -2,6 +2,7 @@
 
 CanWalProcessingAdapter::CanWalProcessingAdapter()
 {
+    _iPsNvs = nullptr;
     _iPsOsAbstraction = nullptr;
     _iPiOs = nullptr;
     _iPsCanInterface = nullptr;
@@ -9,9 +10,12 @@ CanWalProcessingAdapter::CanWalProcessingAdapter()
     _iPsRemoteControl = nullptr;
     _iPiRemoteControl = nullptr;
     _iPsSoundPlayer = nullptr;
+    _nvsHandle = {};
+    _platformSpecificTimerHandleByTimerId = {};
 }
 
 void CanWalProcessingAdapter::SetOutputInterfaces(
+    PlatformSpecific::INvs::Input* iPsNvs,
     PlatformSpecific::IOsAbstraction::Input* iPsOsAbstraction,
     PlatformIndependent::Commons::IOs::Input* iPiOs,
     PlatformSpecific::ICanInterface::Input* iPsCanInterface,
@@ -21,6 +25,7 @@ void CanWalProcessingAdapter::SetOutputInterfaces(
     PlatformSpecific::ISoundPlayer::Input* iPsSoundPlayer
 )
 {
+    _iPsNvs = iPsNvs;
     _iPsOsAbstraction = iPsOsAbstraction;
     _iPiOs = iPiOs;
     _iPsCanInterface = iPsCanInterface;
@@ -28,6 +33,36 @@ void CanWalProcessingAdapter::SetOutputInterfaces(
     _iPsRemoteControl = iPsRemoteControl;
     _iPiRemoteControl = iPiRemoteControl;
     _iPsSoundPlayer = iPsSoundPlayer;
+}
+
+void CanWalProcessingAdapter::Start()
+{
+    constexpr char nvsNamespaceName[PlatformSpecific::INvs::Input::namespaceNameLength] = { "CanWal" };
+    _nvsHandle = _iPsNvs->IPsNvsOpen(nvsNamespaceName);
+}
+
+bool CanWalProcessingAdapter::IPiStoreGetEnableWAL()
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "EnableWal" };
+    return _iPsNvs->IPsNvsGetBool(_nvsHandle, nvsKey, true);
+}
+
+void CanWalProcessingAdapter::IPiStoreSetEnableWAL(bool enable)
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "EnableWal" };
+    _iPsNvs->IPsNvsSetBool(_nvsHandle, nvsKey, enable);
+}
+
+bool CanWalProcessingAdapter::IPiStoreGetMayCloseWindowsAndRoof()
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "MayCloseWandR" };
+    return _iPsNvs->IPsNvsGetBool(_nvsHandle, nvsKey, true);
+}
+
+void CanWalProcessingAdapter::IPiStoreSetMayCloseWindowsAndRoof(bool enable)
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "MayCloseWandR" };
+    _iPsNvs->IPsNvsSetBool(_nvsHandle, nvsKey, enable);
 }
 
 void CanWalProcessingAdapter::IpsOsAbstractionHandleExpiredTimer(int timerId)

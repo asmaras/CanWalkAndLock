@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PlatformSpecific/INvs.h"
+#include "PlatformIndependent/Commons/IStore.h"
 #include "PlatformSpecific/IOsAbstraction.h"
 #include "PlatformIndependent/Commons/IOs.h"
 #include "PlatformSpecific/ICanInterface.h"
@@ -11,6 +13,7 @@
 #include <map>
 
 class CanWalProcessingAdapter :
+    public PlatformIndependent::Commons::IStore::Output,
     public PlatformSpecific::IOsAbstraction::Output,
     public PlatformIndependent::Commons::IOs::Output,
     public PlatformSpecific::ICanInterface::Output,
@@ -22,6 +25,7 @@ class CanWalProcessingAdapter :
 public:
     CanWalProcessingAdapter();
     void SetOutputInterfaces(
+        PlatformSpecific::INvs::Input* iPsNvs,
         PlatformSpecific::IOsAbstraction::Input* iPsOsAbstraction,
         PlatformIndependent::Commons::IOs::Input* iPiOs,
         PlatformSpecific::ICanInterface::Input* iPsCanInterface,
@@ -30,8 +34,15 @@ public:
         PlatformIndependent::Commons::IRemoteControl::Input* iPiRemoteControl,
         PlatformSpecific::ISoundPlayer::Input* iPsSoundPlayer
     );
+    void Start();
 
 private:
+    // Platform independent store functions -> adapter
+    // PlatformIndependent::Commons::IStore
+    bool IPiStoreGetEnableWAL() override;
+    void IPiStoreSetEnableWAL(bool enable) override;
+    bool IPiStoreGetMayCloseWindowsAndRoof() override;
+    void IPiStoreSetMayCloseWindowsAndRoof(bool enable) override;
     // Platform specific OS functions -> adapter
     // PlatformSpecific::IOsAbstraction::Output
     void IpsOsAbstractionHandleExpiredTimer(int timerId) override;
@@ -58,6 +69,8 @@ private:
     void IPiSoundPlaySound(PlatformIndependent::Commons::ISound::Output::Sound sound) override;
     void IPiSoundStopPlayingSound() override;
 
+    // Adapter -> Platform specific NVS functions
+    PlatformSpecific::INvs::Input* _iPsNvs;
     // Adapter -> Platform specific OS functions
     PlatformSpecific::IOsAbstraction::Input* _iPsOsAbstraction;
     // Adapter -> Platform independent OS functions
@@ -73,5 +86,6 @@ private:
     // Adapter -> Platform specific sound functions
     PlatformSpecific::ISoundPlayer::Input* _iPsSoundPlayer;
 
+    PlatformSpecific::INvs::Input::NvsHandle _nvsHandle;
     std::map<int, PlatformSpecific::IOsAbstraction::Input::TimerHandle> _platformSpecificTimerHandleByTimerId;
 };

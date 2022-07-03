@@ -1,3 +1,4 @@
+#include "PlatformSpecific/Nvs.h"
 #include "PlatformSpecific/OsAbstraction.h"
 #include "PlatformSpecific/CanInterface.h"
 #include "PlatformSpecific/RemoteControl.h"
@@ -12,6 +13,7 @@
 #include <driver/gpio.h>
 
 SemaphoreHandle_t processingMutex = xSemaphoreCreateMutex();
+PlatformSpecific::Nvs psNvs;
 PlatformSpecific::OsAbstraction psOsAbstraction(processingMutex);
 PlatformSpecific::CanInterface psCanInterface(processingMutex);
 PlatformSpecific::RemoteControl psRemoteControl(processingMutex);
@@ -34,6 +36,7 @@ void CppMain()
         &canWalProcessingAdapter,
         &canWalProcessingAdapter,
         &canWalProcessingAdapter,
+        &canWalProcessingAdapter,
         &canWalProcessingAdapter
     );
     piCanPdcProcessing.SetOutputInterfaces(
@@ -45,6 +48,7 @@ void CppMain()
     // Adapters -> Platform independent
     //=================================
     canWalProcessingAdapter.SetOutputInterfaces(
+        &psNvs,
         &psOsAbstraction,
         &piCanWalProcessing,
         &psCanInterface,
@@ -61,6 +65,8 @@ void CppMain()
         &psPdcInterface
     );
     // Start all the things
+    canWalProcessingAdapter.Start();
+    piCanWalProcessing.Start();
     psCanInterface.Start();
 
     gpio_config_t io_conf = {};

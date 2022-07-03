@@ -76,6 +76,6 @@ namespace PlatformIndependent
         void StartTimer(int timerId, TimerPeriod timerPeriod);
 
         PlatformIndependent::Commons::IPdc::Output* _iPdc;
-        static const int _switchOffSpeed = 20 * 10;
+        static constexpr int _switchOffSpeed = 20 * 10;
     };
 }

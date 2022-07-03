@@ -3,6 +3,6 @@
 # project subdirectory.
 #
 
-PROJECT_NAME := CanWalkANdLock
+PROJECT_NAME := CanWalkAndLock
 
 include $(IDF_PATH)/make/project.mk
