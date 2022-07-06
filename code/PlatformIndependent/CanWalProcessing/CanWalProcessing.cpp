@@ -581,6 +581,9 @@ namespace PlatformIndependent
                     Trace("Cancelled during execution trigger is set");
                 }
                 break;
+            case EventType::handbrakeToggleRepeat:
+                _walCancelState = WalCancelState::walCancelled;
+                break;
             default:
                 break;
             }
