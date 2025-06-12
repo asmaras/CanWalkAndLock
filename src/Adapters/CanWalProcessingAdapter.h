@@ -43,6 +43,10 @@ private:
     void IPiStoreSetEnableWAL(bool enable) override;
     bool IPiStoreGetMayCloseWindowsAndRoof() override;
     void IPiStoreSetMayCloseWindowsAndRoof(bool enable) override;
+    uint16_t IPIStoreGetMirrorFoldFails() override;
+    void IPIStoreSetMirrorFoldFails(uint16_t fails) override;
+    uint16_t IPIStoreGetMirrorFoldRecoveries() override;
+    void IPIStoreSetMirrorFoldRecoveries(uint16_t recoveries) override;
     // Platform specific OS functions -> adapter
     // PlatformSpecific::IOsAbstraction::Output
     void IpsOsAbstractionHandleExpiredTimer(int timerId) override;

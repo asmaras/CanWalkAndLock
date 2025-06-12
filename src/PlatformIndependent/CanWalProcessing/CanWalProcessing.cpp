@@ -6,7 +6,7 @@ namespace PlatformIndependent
         _useRemoteControl(useRemoteControl)
     {
         // At power-up we assume all doors to be closed and locked,
-        // the key to be outside, the mirrors to be unfolded and the handbrake to be active
+        // the key to be outside and the mirrors to be unfolded
         // This should be consistent in the stored reported statuses as well as in the states
         _storedReportedStatuses.doorOpenStatuses.frontDriverSideDoorIsOpen = false;
         _storedReportedStatuses.doorOpenStatuses.rearDriverSideDoorIsOpen = false;
@@ -24,7 +24,6 @@ namespace PlatformIndependent
         {
             _storedReportedStatuses.doorLockControlLast4Bytes[index] = 0;
         }
-        _storedReportedStatuses.handbrakeIsActive = true;
         _frontPassengerSeatState = FrontPassengerSeatState::vacated;
         _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
         _doorOpenSequenceAfterUnlockState = DoorOpenSequenceAfterUnlockState::lockedOrNoDoorOpenedAfterUnlock;
@@ -36,6 +35,7 @@ namespace PlatformIndependent
         _storeValueEnableWal = false;
         _storeValueMayCloseWindowsAndRoof = false;
         _performingRemoteControlOperation = false;
+        _mirrorFoldFailed = false;
     }
 
     void CanWalProcessing::SetOutputInterfaces(
@@ -59,6 +59,8 @@ namespace PlatformIndependent
         Trace("Getting _storeValueEnableWal(%s)", _storeValueEnableWal ? "true" : "false");
         _storeValueMayCloseWindowsAndRoof = _iStore->IPiStoreGetMayCloseWindowsAndRoof();
         Trace("Getting _storeValueMayCloseWindowsAndRoof(%s)", _storeValueMayCloseWindowsAndRoof ? "true" : "false");
+        _mirrorFoldFails = _iStore->IPIStoreGetMirrorFoldFails();
+        _mirrorFoldRecoveries = _iStore->IPIStoreGetMirrorFoldRecoveries();
         // Timer for test code
         // StartTimer(Timers::intermediateCountdownSoundInterval, TimerPeriod::intermediateCountdownSoundInterval);
     }
@@ -95,6 +97,12 @@ namespace PlatformIndependent
                 Event event;
                 event.type = EventType::doorLockStatus;
                 HandleEvent(event);
+
+                if (TimerRunning(Timers::mirrorFoldRepeatedToggleMaximumInterval))
+                {
+                    Trace("Stopping timer for detection of repeated mirror fold toggle because of door lock status change");
+                    StopTimer(Timers::mirrorFoldRepeatedToggleMaximumInterval);
+                }
             }
         }
         break;
@@ -117,6 +125,12 @@ namespace PlatformIndependent
                 Event event;
                 event.type = EventType::doorLockStatus;
                 HandleEvent(event);
+
+                if (TimerRunning(Timers::mirrorFoldRepeatedToggleMaximumInterval))
+                {
+                    Trace("Stopping timer for detection of repeated mirror fold toggle because of door lock status change");
+                    StopTimer(Timers::mirrorFoldRepeatedToggleMaximumInterval);
+                }
             }
         }
         break;
@@ -139,6 +153,12 @@ namespace PlatformIndependent
                 Event event;
                 event.type = EventType::doorLockStatus;
                 HandleEvent(event);
+
+                if (TimerRunning(Timers::mirrorFoldRepeatedToggleMaximumInterval))
+                {
+                    Trace("Stopping timer for detection of repeated mirror fold toggle because of door lock status change");
+                    StopTimer(Timers::mirrorFoldRepeatedToggleMaximumInterval);
+                }
             }
         }
         break;
@@ -161,18 +181,65 @@ namespace PlatformIndependent
                 Event event;
                 event.type = EventType::doorLockStatus;
                 HandleEvent(event);
+
+                if (TimerRunning(Timers::mirrorFoldRepeatedToggleMaximumInterval))
+                {
+                    Trace("Stopping timer for detection of repeated mirror fold toggle because of door lock status change");
+                    StopTimer(Timers::mirrorFoldRepeatedToggleMaximumInterval);
+                }
             }
         }
         break;
         case PlatformIndependent::Commons::ICan::CanId::mirrorFoldStatus:
         {
+            static int mirrorFoldRepeatedToggleCount = 0;
             // Byte 0 will be F7 when the mirrors are being folded
             bool mirrorsAreFolded = data[0] == 0xF7;
             if (mirrorsAreFolded != _storedReportedStatuses.mirrorsAreFolded)
             {
+                bool mirrorsWerePreviouslyFolded = _storedReportedStatuses.mirrorsAreFolded;
                 _storedReportedStatuses.mirrorsAreFolded = mirrorsAreFolded;
-                // This only needs to be stored, no event handling needed
                 Trace("Status mirrorFoldStatus(%d)", mirrorsAreFolded);
+
+                if (_mainWalState == MainWalState::executing)
+                {
+                    Trace("Ignoring mirror fold toggle because WAL is executing");
+                }
+                else
+                {
+                    if (TimerRunning(Timers::mirrorFoldRepeatedToggleMaximumInterval))
+                    {
+                        mirrorFoldRepeatedToggleCount++;
+                        Trace("mirrorFoldRepeatedToggleCount(%d)", mirrorFoldRepeatedToggleCount);
+                        if (mirrorFoldRepeatedToggleCount == 2)
+                        {
+                            Event event;
+                            event.type = EventType::mirrorFoldToggleRepeat;
+                            HandleEvent(event);
+                        }
+                        else if (mirrorFoldRepeatedToggleCount == 6)
+                        {
+                            _storeValueEnableWal = !_storeValueEnableWal;
+                            Trace("Setting _storeValueEnableWal(%s)", _storeValueEnableWal ? "true" : "false");
+                            _iStore->IPiStoreSetEnableWAL(_storeValueEnableWal);
+                        }
+                        StartTimer(Timers::mirrorFoldRepeatedToggleMaximumInterval, TimerPeriod::mirrorFoldRepeatedToggleMaximumInterval);
+                    }
+                    else
+                    {
+                        Trace("No repeated mirror fold toggle interval active, start of a possible repeated toggle");
+                        if (!mirrorsWerePreviouslyFolded && mirrorsAreFolded)
+                        {
+                            mirrorFoldRepeatedToggleCount = 1;
+                            StartTimer(Timers::mirrorFoldRepeatedToggleMaximumInterval, TimerPeriod::mirrorFoldRepeatedToggleMaximumInterval);
+                            Trace("Mirrors change from unfolded to folded, mirrorFoldRepeatedToggleCount set to 1");
+                        }
+                        else
+                        {
+                            Trace("Mirrors change from folded to unfolded, not starting detection of repeated toggle");
+                        }
+                    }
+                }
             }
         }
         break;
@@ -332,39 +399,6 @@ namespace PlatformIndependent
             }
         }
         break;
-        case PlatformIndependent::Commons::ICan::CanId::handbrakeStatus:
-        {
-            static int handbrakeToggleRepeatCount = 0;
-            // Bits 0 and 1 of byte 0 are 2 when the handbrake is active
-            bool handbrakeIsActive = (data[0] & 0x03) == 2;
-            if (handbrakeIsActive != _storedReportedStatuses.handbrakeIsActive)
-            {
-                _storedReportedStatuses.handbrakeIsActive = handbrakeIsActive;
-                if (TimerRunning(Timers::handbrakeToggleRepeat))
-                {
-                    handbrakeToggleRepeatCount++;
-                    Trace("handbrakeToggleRepeatCount(%d)", handbrakeToggleRepeatCount);
-                    if (handbrakeToggleRepeatCount == 2)
-                    {
-                        Event event;
-                        event.type = EventType::handbrakeToggleRepeat;
-                        HandleEvent(event);
-                    }
-                    else if (handbrakeToggleRepeatCount == 6)
-                    {
-                        _storeValueEnableWal = !_storeValueEnableWal;
-                        Trace("Setting _storeValueEnableWal(%s)", _storeValueEnableWal ? "true" : "false");
-                        _iStore->IPiStoreSetEnableWAL(_storeValueEnableWal);
-                    }
-                }
-                else
-                {
-                    handbrakeToggleRepeatCount = 1;
-                }
-                StartTimer(Timers::handbrakeToggleRepeat, TimerPeriod::handbrakeToggleRepeatTime);
-            }
-        }
-        break;
         default:
             break;
         }
@@ -391,7 +425,7 @@ namespace PlatformIndependent
         switch (walCancelState)
         {
         case WalCancelState::lockedOrNoDoorOpenedAfterUnlock: return "lockedOrNoDoorOpenedAfterUnlock";
-        case WalCancelState::cancellationBeforeExecutionPossible: return "cancellationBeforeExecutionPossible";
+        case WalCancelState::cancellationByRemoteControlPossible: return "cancellationByRemoteControlPossible";
         case WalCancelState::walCancelled: return "walCancelled";
         default: return "";
         }
@@ -509,24 +543,35 @@ namespace PlatformIndependent
         }
 
         // WAL can be cancelled before and during execution
-        // Before execution it can be cancelled by the remote control and handbrake toggle, but not
-        // by the door handle buttons
-        // During execution the closing of windows and roof can be stopped by both remote control
-        // and door handle buttons
-        // During the first few seconds of execution a button press will also cancel WAL to make it
-        // possible for the user to cancel if they forgot to do it beforehand
-        // After that period a button press will only stop the motion but WAL will lock the car
-        // again under the right conditions
+        // Before execution it can be cancelled by the remote control and mirror fold toggle, but
+        // not by the door handle buttons (because these events are not received when the car is
+        // unlocked) (note 1)
+        // During execution it can be cancelled by both remote control and door handle buttons
+        // (note 2)
+        // This also stops the closing of windows and roof
         // The cancellation lasts until all doors are closed and locked, or until the car has moved
+        //
+        // Note 1: the user may forget they cancelled WAL so if no door has been opened or closed
+        // for some time we assume they forgot
+        // We can't simply re-activate WAL after this period, because that would lock the doors
+        // Instead we wait until the user closes all doors (e.g. after leaving the car or getting
+        // an item from inside the car) and then activate WAL again, resulting in the doors locking
+        // If the user opens or closes a door within the "forget period", WAL remains active and
+        // the period is started again
+        // Note 2: in this case we must consider that the user might not want to cancel WAL but
+        // for example wants to pick an item from the car
+        // They then expect the doors to lock after closing them so, just like in note 1, we
+        // activate WAL again (there is no "forget period" in this case)
         //
         // Remote control considerations:
         //   When WAL is not being executed:
         //     When locking the car with the lock button there is no need for cancellation
-        //     If the driver door is open a press of the lock button will cancel WAL
         //     If we unlock the car with the remote control we want WAL to be armed
         //     In that case the car will lock again automatically if we don't open a door
         //     From the time we open a door it is possible to cancel WAL
         //     Then a press of the unlock button will cancel WAL even if a door is open
+        //     If the driver door is open a press of the lock button will not pre-lock the car so
+        //     it can also be used to cancel WAL
         //   When WAL is being executed:
         //     A press of the lock or unlock button will cancel execution
         //     If pressed during the first few seconds of execution it will also cancel WAL as
@@ -546,18 +591,20 @@ namespace PlatformIndependent
         //     If pressed during the first few seconds of execution it will also cancel WAL as
         //     described
         //
-        // About handbrake toggle:
-        //   By toggling the handbrake on/off or off/on quickly, WAL can be cancelled before
-        //   exiting the car
+        // About mirror fold toggle:
+        //   By toggling the mirror fold button on/off or off/on quickly, WAL can be cancelled
+        //   before exiting the car
         // 
         // Summary:
         // Unlock car with remote control or door handle button -> doors remain closed -> automatically lock
-        // Unlock car -> door opened -> cancellation possible by remote control and handbrake toggle -> situation (A)
+        // Unlock car -> door opened -> cancellation possible by remote control and mirror fold toggle -> situation (A)
         //   Situation (A) -> door closed -> executing WAL -> cancellation possible by all means
         //   Situation (A) -> WAL cancelled -> car locked by user / car is being driven -> new WAL possible
+        //   Situation (A) -> WAL cancelled -> "forget period" passes -> door opened (optional, may already be open)
+        //                 -> door closed -> WAL reactivated -> doors locked by WAL
         auto previousWalCancelState = _walCancelState;
         bool walCancelStateChanged = false;
-        bool walCancelledDuringExecutionTrigger = false;
+        bool stopWalExecutionTrigger = false;
         switch (_walCancelState)
         {
         case WalCancelState::lockedOrNoDoorOpenedAfterUnlock:
@@ -572,7 +619,7 @@ namespace PlatformIndependent
             case EventType::doorOpenStatus:
                 if (!DoorsBootAndBonnetAreClosed())
                 {
-                    _walCancelState = WalCancelState::cancellationBeforeExecutionPossible;
+                    _walCancelState = WalCancelState::cancellationByRemoteControlPossible;
                 }
                 break;
             case EventType::remoteControlButtonPressed:
@@ -580,15 +627,13 @@ namespace PlatformIndependent
                 // At any time during execution WAL can be cancelled
                 if (_mainWalState == MainWalState::executing)
                 {
-                    if (TimerRunning(Timers::permanentCancelPeriodDuringWalExecution))
-                    {
-                        _walCancelState = WalCancelState::walCancelled;
-                    }
-                    walCancelledDuringExecutionTrigger = true;
-                    Trace("Cancelled during execution trigger is set");
+                    stopWalExecutionTrigger = true;
+                    Trace("Stop WAL execution trigger is set");
+                    _walCancelState = WalCancelState::walCancelled;
                 }
                 break;
-            case EventType::handbrakeToggleRepeat:
+            case EventType::mirrorFoldToggleRepeat:
+                StartTimer(Timers::cancelForgetPeriod, TimerPeriod::cancelForgetPeriod);
                 _walCancelState = WalCancelState::walCancelled;
                 _iSound->IPiSoundPlaySound(PlatformIndependent::Commons::ISound::Output::Sound::intermediateCountdown);
                 break;
@@ -596,7 +641,7 @@ namespace PlatformIndependent
                 break;
             }
             break;
-        case WalCancelState::cancellationBeforeExecutionPossible:
+        case WalCancelState::cancellationByRemoteControlPossible:
             switch (event.type)
             {
             case EventType::doorOpenStatus:
@@ -607,7 +652,8 @@ namespace PlatformIndependent
                 }
                 break;
             case EventType::remoteControlButtonPressed:
-            case EventType::handbrakeToggleRepeat:
+            case EventType::mirrorFoldToggleRepeat:
+                StartTimer(Timers::cancelForgetPeriod, TimerPeriod::cancelForgetPeriod);
                 _walCancelState = WalCancelState::walCancelled;
                 _iSound->IPiSoundPlaySound(PlatformIndependent::Commons::ISound::Output::Sound::intermediateCountdown);
                 break;
@@ -619,19 +665,42 @@ namespace PlatformIndependent
             switch (event.type)
             {
             case EventType::doorOpenStatus:
+                if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
+                {
+                    // All doors closed and locked, cancel no longer active
+                    if (TimerRunning(Timers::cancelForgetPeriod)) StopTimer(Timers::cancelForgetPeriod);
+                    _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
+                }
+                // A door opened or closed
+                // If the last open/close was some time ago the user may have forgotten they cancelled WAL
+                else if (TimerRunning(Timers::cancelForgetPeriod))
+                {
+                    // Within forget period, start period again
+                    StartTimer(Timers::cancelForgetPeriod, TimerPeriod::cancelForgetPeriod);
+                }
+                // We are outside the forget period, user may have forgotten they cancelled WAL
+                // If all doors are closed now, stop cancelling WAL
+                else if (DoorsBootAndBonnetAreClosed())
+                {
+                    _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
+                }
+                break;
             case EventType::doorLockStatus:
                 if (DoorsBootAndBonnetAreClosed() && AllDoorsAreLocked())
                 {
+                    if (TimerRunning(Timers::cancelForgetPeriod)) StopTimer(Timers::cancelForgetPeriod);
                     _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
             case EventType::vehicleSpeed:
                 if (_storedReportedStatuses.vehicleSpeed > _drivingSpeedThreshold)
                 {
+                    if (TimerRunning(Timers::cancelForgetPeriod)) StopTimer(Timers::cancelForgetPeriod);
                     _walCancelState = WalCancelState::lockedOrNoDoorOpenedAfterUnlock;
                 }
                 break;
-            case EventType::handbrakeToggleRepeat:
+            case EventType::mirrorFoldToggleRepeat:
+                StartTimer(Timers::cancelForgetPeriod, TimerPeriod::cancelForgetPeriod);
                 _iSound->IPiSoundPlaySound(PlatformIndependent::Commons::ISound::Output::Sound::goFast);
                 break;
             default:
@@ -761,6 +830,13 @@ namespace PlatformIndependent
                 switch (event.timerExpiry.timerId)
                 {
                 case Timers::lockCarWait:
+                    // When the user wants to leave the windows and roof open they can indicate
+                    // this by folding the mirrors
+                    // However when the car is unlocked, the mirrors always unfold
+                    // This should not be mistaken for the user's wish to close the windows and roof
+                    // Only when the driver door was opened the user was able to make a choice by
+                    // pushing the mirror button. So only in that case we store the mirror fold
+                    // status
                     if (_doorOpenSequenceAfterUnlockState == DoorOpenSequenceAfterUnlockState::driverDoorOpenedAfterUnlock)
                     {
                         bool mayCloseWindowsAndRoof = !_storedReportedStatuses.mirrorsAreFolded;
@@ -772,17 +848,15 @@ namespace PlatformIndependent
                         }
                     }
                     LockDoors();
+                    StartTimer(Timers::foldMirrorsCanMessageWait, TimerPeriod::foldMirrorsCanMessageWait);
                     if (_storeValueMayCloseWindowsAndRoof)
                     {
-                        StartTimer(Timers::foldMirrorsCanMessageWait, TimerPeriod::foldMirrorsCanMessageWait);
                         StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionAfterClosingWindowsAndRoof);
                     }
                     else
                     {
-                        StartTimer(Timers::foldMirrorsCanMessageWait, TimerPeriod::foldMirrorsCanMessageWait);
                         StartTimer(Timers::stopWalExecution, TimerPeriod::stopWalExecutionAfterLocking);
                     }
-                    StartTimer(Timers::permanentCancelPeriodDuringWalExecution, TimerPeriod::permanentCancelPeriodDuringWalExecution);
                     _mainWalState = MainWalState::executing;
                     break;
                 case Timers::intermediateCountdownSoundInterval:
@@ -811,19 +885,39 @@ namespace PlatformIndependent
                 switch (event.timerExpiry.timerId)
                 {
                 case Timers::foldMirrorsCanMessageWait:
+                    _mirrorFoldFailed = false;
                     SendFoldMirrorsMessage();
+                    StartTimer(Timers::checkMirrorsFolded, TimerPeriod::checkMirrorsFolded);
                     if (_storeValueMayCloseWindowsAndRoof)
                     {
-                        StartTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait, TimerPeriod::closeWindowsAndRoofAndFoldMirrorsCanMessageInterval);
+                        StartTimer(Timers::closeWindowsAndRoofCanMessageWait, TimerPeriod::closeWindowsAndRoofCanMessageWaitStandardInterval);
                     }
                     break;
-                case Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait:
-                    SendCloseWindowsAndRoofAndFoldMirrorsMessage();
-                    StartTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait, TimerPeriod::closeWindowsAndRoofAndFoldMirrorsCanMessageInterval);
+                case Timers::checkMirrorsFolded:
+                    if (_storedReportedStatuses.mirrorsAreFolded)
+                    {
+                        if (_mirrorFoldFailed)
+                        {
+                            _mirrorFoldRecoveries++;
+                            _iStore->IPIStoreSetMirrorFoldRecoveries(_mirrorFoldRecoveries);
+                        }
+                    }
+                    else
+                    {
+                        _mirrorFoldFailed = true;
+                        _mirrorFoldFails++;
+                        _iStore->IPIStoreSetMirrorFoldFails(_mirrorFoldFails);
+                        SendFoldMirrorsMessage();
+                        StartTimer(Timers::checkMirrorsFolded, TimerPeriod::checkMirrorsFolded);
+                    }
+                    break;
+                case Timers::closeWindowsAndRoofCanMessageWait:
+                    SendCloseWindowsAndRoofMessage();
+                    StartTimer(Timers::closeWindowsAndRoofCanMessageWait, TimerPeriod::closeWindowsAndRoofCanMessageWaitStandardInterval);
                     break;
                 case Timers::stopWalExecution:
-                    if (TimerRunning(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait)) StopTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
-                    if (TimerRunning(Timers::permanentCancelPeriodDuringWalExecution)) StopTimer(Timers::permanentCancelPeriodDuringWalExecution);
+                    if (TimerRunning(Timers::checkMirrorsFolded)) StopTimer(Timers::checkMirrorsFolded);
+                    if (TimerRunning(Timers::closeWindowsAndRoofCanMessageWait)) StopTimer(Timers::closeWindowsAndRoofCanMessageWait);
                     _mainWalState = MainWalState::noGo;
                     break;
                 default:
@@ -831,25 +925,27 @@ namespace PlatformIndependent
                 }
                 break;
             case EventType::windowRoofAndMirrorControl:
-                if (_storeValueMayCloseWindowsAndRoof && TimerRunning(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait))
+                if (_storeValueMayCloseWindowsAndRoof && TimerRunning(Timers::closeWindowsAndRoofCanMessageWait))
                 {
                     // Another ECU might send this message, thereby stopping the movement of windows and roof
                     // To minimize that effect introduce a delay before continuing to send messages
-                    StopTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
-                    StartTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait, TimerPeriod::closeWindowsAndRoofAndFoldMirrorsCanMessageWaitAfterStop);
+                    Trace("Movement of windows and roof probably stopped by another ECU's windowRoofAndMirrorControl message. Wait before sending messages again");
+                    StopTimer(Timers::closeWindowsAndRoofCanMessageWait);
+                    StartTimer(Timers::closeWindowsAndRoofCanMessageWait, TimerPeriod::closeWindowsAndRoofCanMessageWaitAfterStop);
                 }
                 break;
             default:
                 // Only an active cancellation may stop us now
-                if (walCancelledDuringExecutionTrigger)
+                if (stopWalExecutionTrigger)
                 {
-                    if (TimerRunning(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait))
+                    if (TimerRunning(Timers::foldMirrorsCanMessageWait)) StopTimer(Timers::foldMirrorsCanMessageWait);
+                    if (TimerRunning(Timers::checkMirrorsFolded)) StopTimer(Timers::checkMirrorsFolded);
+                    if (TimerRunning(Timers::closeWindowsAndRoofCanMessageWait))
                     {
-                        StopTimer(Timers::closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
+                        StopTimer(Timers::closeWindowsAndRoofCanMessageWait);
                         SendStopCloseWindowsAndRoofAndFoldMirrorsMessage();
                     }
                     StopTimer(Timers::stopWalExecution);
-                    if (TimerRunning(Timers::permanentCancelPeriodDuringWalExecution)) StopTimer(Timers::permanentCancelPeriodDuringWalExecution);
                     _mainWalState = MainWalState::noGo;
                 }
                 break;
@@ -905,10 +1001,10 @@ namespace PlatformIndependent
             Trace("Event keyLocation(%d)", _storedReportedStatuses.keyIsOutside);
             break;
         case EventType::windowRoofAndMirrorControl:
-            //_iCanWalProcessingOs->Trace("Event windowRoofAndMirrorControl");
+            Trace("Event windowRoofAndMirrorControl");
             break;
-        case EventType::handbrakeToggleRepeat:
-            Trace("Event handbrakeToggleRepeat");
+        case EventType::mirrorFoldToggleRepeat:
+            Trace("Event mirrorFoldToggleRepeat");
             break;
         default:
             break;
@@ -993,9 +1089,9 @@ namespace PlatformIndependent
         _iCan->IPiCanSendCanMessage(PlatformIndependent::Commons::ICan::CanId::windowRoofAndMirrorControl, sizeof(data), data);
     }
 
-    void CanWalProcessing::SendCloseWindowsAndRoofAndFoldMirrorsMessage()
+    void CanWalProcessing::SendCloseWindowsAndRoofMessage()
     {
-        constexpr unsigned char data[8] = { 0x1B, 0x1B, 0x1B, 0x52, 0xFF, 0xFF, 0xFF, 0xFF };
+        constexpr unsigned char data[8] = { 0x1B, 0x00, 0x1B, 0x52, 0xFF, 0xFF, 0xFF, 0xFF };
         _iCan->IPiCanSendCanMessage(PlatformIndependent::Commons::ICan::CanId::windowRoofAndMirrorControl, sizeof(data), data);
     }
 

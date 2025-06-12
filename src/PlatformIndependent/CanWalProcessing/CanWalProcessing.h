@@ -6,6 +6,7 @@
 #include "PlatformIndependent/Commons/ICan.h"
 #include "PlatformIndependent/Commons/IRemoteControl.h"
 #include "PlatformIndependent/Commons/ISound.h"
+#include <stdint.h>
 
 namespace PlatformIndependent
 {
@@ -24,6 +25,9 @@ namespace PlatformIndependent
             PlatformIndependent::Commons::ISound::Output* iSound
         );
         void Start();
+
+        uint16_t _mirrorFoldFails = 0;
+        uint16_t _mirrorFoldRecoveries = 0;
 
     private:
         // Function calls to input interfaces should always be mutually excluded
@@ -60,7 +64,6 @@ namespace PlatformIndependent
             bool keyIsOutside;
             bool mirrorsAreFolded;
             unsigned char doorLockControlLast4Bytes[4];
-            bool handbrakeIsActive;
         } _storedReportedStatuses;
         // State machine info
         // The states for the various state machines
@@ -74,7 +77,7 @@ namespace PlatformIndependent
         enum class WalCancelState
         {
             lockedOrNoDoorOpenedAfterUnlock,
-            cancellationBeforeExecutionPossible,
+            cancellationByRemoteControlPossible,
             walCancelled
         } _walCancelState;
         const char* ToString(WalCancelState walCancelState);
@@ -104,7 +107,7 @@ namespace PlatformIndependent
             vehicleSpeed,
             keyLocation,
             windowRoofAndMirrorControl,
-            handbrakeToggleRepeat
+            mirrorFoldToggleRepeat
         };
         // Timers
         enum class TimerPeriod
@@ -114,12 +117,13 @@ namespace PlatformIndependent
             lockCarWaitLong = 30000,
             intermediateCountdownSoundInterval = 2000,
             foldMirrorsCanMessageWait = 1000,
-            closeWindowsAndRoofAndFoldMirrorsCanMessageInterval = 100,
-            closeWindowsAndRoofAndFoldMirrorsCanMessageWaitAfterStop = 500,
+            checkMirrorsFolded = 1000,
+            closeWindowsAndRoofCanMessageWaitStandardInterval = 100,
+            closeWindowsAndRoofCanMessageWaitAfterStop = 500,
             stopWalExecutionAfterClosingWindowsAndRoof = 25000,
             stopWalExecutionAfterLocking = 5000,
-            permanentCancelPeriodDuringWalExecution = 5000,
-            handbrakeToggleRepeatTime = 500
+            mirrorFoldRepeatedToggleMaximumInterval = 1000,
+            cancelForgetPeriod = 30000
         };
         // Timer variables
         struct Timers
@@ -128,10 +132,11 @@ namespace PlatformIndependent
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(lockCarWait);
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(intermediateCountdownSoundInterval);
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(foldMirrorsCanMessageWait);
-            PLATFORMINDEPENDENCECOMMONS_OSTIMER(closeWindowsAndRoofAndFoldMirrorsCanMessageWait);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(checkMirrorsFolded);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(closeWindowsAndRoofCanMessageWait);
             PLATFORMINDEPENDENCECOMMONS_OSTIMER(stopWalExecution);
-            PLATFORMINDEPENDENCECOMMONS_OSTIMER(permanentCancelPeriodDuringWalExecution);
-            PLATFORMINDEPENDENCECOMMONS_OSTIMER(handbrakeToggleRepeat);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(mirrorFoldRepeatedToggleMaximumInterval);
+            PLATFORMINDEPENDENCECOMMONS_OSTIMER(cancelForgetPeriod);
         } _timers;
         // Event struct holding event type and parameters
         // Stored statuses are not included as parameters to make code less complex because it only has
@@ -163,7 +168,7 @@ namespace PlatformIndependent
         void LockDoors();
         void SendLockDoorsMessage();
         void SendFoldMirrorsMessage();
-        void SendCloseWindowsAndRoofAndFoldMirrorsMessage();
+        void SendCloseWindowsAndRoofMessage();
         void SendStopCloseWindowsAndRoofAndFoldMirrorsMessage();
         // Nicer version with parameter type TimerPeriod (base class takes an int)
         void StartTimer(int timerId, TimerPeriod timerPeriod);
@@ -177,5 +182,6 @@ namespace PlatformIndependent
         bool _storeValueMayCloseWindowsAndRoof;
         bool _performingRemoteControlOperation;
         static constexpr int _drivingSpeedThreshold = 5 * 10;
+        bool _mirrorFoldFailed;
     };
 }

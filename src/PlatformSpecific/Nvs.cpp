@@ -48,4 +48,25 @@ namespace PlatformSpecific
         ESP_ERROR_CHECK(nvs_set_u8(handle, key, value ? 1 : 0));
         ESP_ERROR_CHECK(nvs_commit(handle));
     }
+
+    uint16_t Nvs::IPsNvsGetUint16(const NvsHandle handle, const char(&key)[PlatformSpecific::INvs::Input::keyLength], uint16_t defaultValue)
+    {
+        uint16_t value;
+        esp_err_t result = nvs_get_u16(handle, key, &value);
+        assert(result == ESP_OK || result == ESP_ERR_NVS_NOT_FOUND);
+        if (result == ESP_OK)
+        {
+            return value;
+        }
+        else
+        {
+            return defaultValue;
+        }
+   }
+
+    void Nvs::IPsNvsSetUint16(const NvsHandle handle, const char(&key)[PlatformSpecific::INvs::Input::keyLength], uint16_t value)
+    {
+        ESP_ERROR_CHECK(nvs_set_u16(handle, key, value));
+        ESP_ERROR_CHECK(nvs_commit(handle));
+    }
 }

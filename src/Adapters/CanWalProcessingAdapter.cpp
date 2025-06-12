@@ -65,6 +65,30 @@ void CanWalProcessingAdapter::IPiStoreSetMayCloseWindowsAndRoof(bool enable)
     _iPsNvs->IPsNvsSetBool(_nvsHandle, nvsKey, enable);
 }
 
+uint16_t CanWalProcessingAdapter::IPIStoreGetMirrorFoldFails()
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "MirrorFoldFails" };
+    return _iPsNvs->IPsNvsGetUint16(_nvsHandle, nvsKey, true);
+}
+
+void CanWalProcessingAdapter::IPIStoreSetMirrorFoldFails(uint16_t fails)
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "MirrorFoldFails" };
+    _iPsNvs->IPsNvsSetUint16(_nvsHandle, nvsKey, fails);
+}
+
+uint16_t CanWalProcessingAdapter::IPIStoreGetMirrorFoldRecoveries()
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "MirrorFoldRecov" };
+    return _iPsNvs->IPsNvsGetUint16(_nvsHandle, nvsKey, true);
+}
+
+void CanWalProcessingAdapter::IPIStoreSetMirrorFoldRecoveries(uint16_t recoveries)
+{
+    constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "MirrorFoldRecov" };
+    _iPsNvs->IPsNvsSetUint16(_nvsHandle, nvsKey, recoveries);
+}
+
 void CanWalProcessingAdapter::IpsOsAbstractionHandleExpiredTimer(int timerId)
 {
     // Cleanup first before calling the function to handle the timer expiry

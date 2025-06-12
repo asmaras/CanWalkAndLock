@@ -25,7 +25,7 @@ namespace PlatformSpecific
         enum class Timings
         {
             powerUp = 250,
-            buttonPress = 250,
+            buttonPress = 500,
             buttonRelease = 500
         };
         class NotificationValues

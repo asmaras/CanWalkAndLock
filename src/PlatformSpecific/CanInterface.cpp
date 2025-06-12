@@ -28,25 +28,54 @@ namespace PlatformSpecific
         _iOutputs.push_back(iOutput);
     }
 
+    void CanInterface::SetOutputInterfaceToNvs(PlatformSpecific::INvs::Input* iPsNvs)
+    {
+        _iPsNvs = iPsNvs;
+    }
+
     void CanInterface::Start()
+    {
+        constexpr char nvsNamespaceName[PlatformSpecific::INvs::Input::namespaceNameLength] = { "Diagnostics" };
+        _nvsHandle = _iPsNvs->IPsNvsOpen(nvsNamespaceName);
+        constexpr char nvsKeyCanSendErrors[PlatformSpecific::INvs::Input::keyLength] = { "CanSendErrors" };
+        _canSendErrors = _iPsNvs->IPsNvsGetUint16(_nvsHandle, nvsKeyCanSendErrors, 0);
+        constexpr char nvsKeyCanRcvErrors[PlatformSpecific::INvs::Input::keyLength] = { "CanRcvErrors" };
+        _canReceiveErrors = _iPsNvs->IPsNvsGetUint16(_nvsHandle, nvsKeyCanRcvErrors, 0);
+
+        StartCanDriver();
+        StartCanReceiveTask();
+    }
+    
+    void CanInterface::StartCanDriver()
     {
         twai_general_config_t generalConfig = TWAI_GENERAL_CONFIG_DEFAULT(_canTxPin, _canRxPin, TWAI_MODE_NORMAL);
         twai_timing_config_t timingConfig = TWAI_TIMING_CONFIG_100KBITS();
         twai_filter_config_t filterConfig = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-
+        
         ESP_ERROR_CHECK(twai_driver_install(&generalConfig, &timingConfig, &filterConfig));
         ESP_LOGI(_logTag, "Installed TWAI driver");
-
+        
         ESP_ERROR_CHECK(twai_start());
         ESP_LOGI(_logTag, "Started TWAI driver");
+    }
 
+    void CanInterface::StopCanDriver()
+    {
+        ESP_ERROR_CHECK(twai_stop());
+        ESP_LOGI(_logTag, "Stopped TWAI driver");
+        ESP_ERROR_CHECK(twai_driver_uninstall());
+        ESP_LOGI(_logTag, "Uninstalled TWAI driver");
+    }
+
+    void CanInterface::StartCanReceiveTask()
+    {
         xTaskCreate(
             CanReceiveTask,
             "CanReceiveTask",
             4096,
             this,
             configMAX_PRIORITIES / 2,
-            nullptr
+            &_canReceiveTaskHandle
         );
     }
 
@@ -56,12 +85,26 @@ namespace PlatformSpecific
         message.identifier = id;
         message.data_length_code = length;
         memcpy(message.data, data, length);
-        ESP_ERROR_CHECK_WITHOUT_ABORT(twai_transmit(&message, 0));
+        if (ESP_ERROR_CHECK_WITHOUT_ABORT(twai_transmit(&message, 0)) != ESP_OK)
+        {
+            _canSendErrors++;
+            constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "CanSendErrors" };
+            _iPsNvs->IPsNvsSetUint16(_nvsHandle, nvsKey, _canSendErrors);
+
+            vTaskDelete(_canReceiveTaskHandle);
+            StopCanDriver();
+            StartCanDriver();
+            StartCanReceiveTask();
+        }
     }
 
     void CanInterface::CanReceiveTask(void* pvParameters)
     {
-        CanInterface* canInterface = (CanInterface*)pvParameters;
+        ((CanInterface*)pvParameters)->CanReceiveTask();
+    }
+
+    void CanInterface::CanReceiveTask()
+    {
         twai_message_t message;
         while (true)
         {
@@ -69,13 +112,22 @@ namespace PlatformSpecific
             {
                 if (!(message.rtr))
                 {
-                    xSemaphoreTake(canInterface->_processingMutex, portMAX_DELAY);
-                    for (auto const& iOutput : canInterface->_iOutputs)
+                    xSemaphoreTake(_processingMutex, portMAX_DELAY);
+                    for (auto const& iOutput : _iOutputs)
                     {
                         iOutput->IPsCanInterfaceHandleCanMessage(message.identifier, message.data_length_code, message.data);
                     }
-                    xSemaphoreGive(canInterface->_processingMutex);
+                    xSemaphoreGive(_processingMutex);
                 }
+            }
+            else
+            {
+                _canReceiveErrors++;
+                constexpr char nvsKey[PlatformSpecific::INvs::Input::keyLength] = { "CanRcvErrors" };
+                _iPsNvs->IPsNvsSetUint16(_nvsHandle, nvsKey, _canReceiveErrors);
+
+                StopCanDriver();
+                StartCanDriver();
             }
         }
     }
